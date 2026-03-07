@@ -155,7 +155,7 @@ class ScsiDevice(LibImpl):
                 extra = f" block={block_num} count={num_blocks}"
             elif cmd == TD_GETGEOMETRY:
                 extra = f" total={self.backend.total_blocks} cyls={self.backend.cyls} heads={self.backend.heads} secs={self.backend.secs}"
-            print(f"[SCSI] {cmd_name} offset={offset} len={length}{extra}")
+            print(f"[SCSI] {cmd_name} offset={offset} len={length} buf=0x{buf_ptr:x}{extra}")
 
         # Clear error and ensure IOF_QUICK is set (we always complete synchronously)
         # This tells the handler that BeginIO completed immediately - no need to wait

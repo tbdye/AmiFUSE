@@ -181,7 +181,6 @@ class HandlerBridge:
         # Use moderate cycle count for startup to allow child processes to run.
         # SFS creates child processes that need to run and register ports.
         # Smaller bursts give us more chances to interleave child execution.
-        # Use small bursts for startup to frequently yield and run children
         replies = self._run_until_replies(cycles=10_000, max_iters=2000, drain_non_essential=False)
         # Check if startup succeeded - res1=0 means the handler rejected the disk
         pkt = AccessStruct(self.mem, DosPacketStruct, self.state.stdpkt_addr)
@@ -292,28 +291,6 @@ class HandlerBridge:
         if self.state.main_loop_pc and self.state.pc == self.state.main_loop_pc:
             pmgr = self.vh.slm.exec_impl.port_mgr
             has_msg = pmgr.has_msg(self.state.port_addr)
-            if self._debug:
-                # Show all ports and their queue status, including sigbit and memory list head
-                from amitools.vamos.libstructs.exec_ import MsgPortStruct, ListStruct
-                port_status = []
-                for addr, port in pmgr.ports.items():
-                    qlen = len(port.queue) if port.queue else 0
-                    # Read mp_SigBit from memory (offset 15 in MsgPort)
-                    try:
-                        sigbit = self.mem.r8(addr + 15)  # mp_SigBit offset
-                        # Read mp_MsgList.lh_Head to see if message is in memory
-                        lst_off = MsgPortStruct.sdef.find_field_def_by_name("mp_MsgList").offset
-                        lh_head = self.mem.r32(addr + lst_off)
-                        lh_tail_addr = addr + lst_off + ListStruct.sdef.find_field_def_by_name("lh_Tail").offset
-                        # If lh_Head == lh_Tail address, list is empty
-                        list_empty = (lh_head == lh_tail_addr or lh_head == 0)
-                    except:
-                        sigbit = -1
-                        lh_head = 0
-                        list_empty = True
-                    list_str = "empty" if list_empty else f"msg@0x{lh_head:x}"
-                    port_status.append(f"0x{addr:x}:py{qlen}/sig{sigbit}/{list_str}")
-                print(f"[amifuse] Ports: {' '.join(port_status)}")
             if has_msg:
                 # Only deliver the DOS port signal (bit 8) during normal
                 # packet processing.  Timer and other signals were already
@@ -642,6 +619,9 @@ class HandlerBridge:
             self._fib_mem = self.vh.alloc.alloc_struct(
                 FileInfoBlockStruct, label="FUSE_FIB"
             )
+            if self._debug:
+                fib_end = self._fib_mem.addr + FileInfoBlockStruct.get_size()
+                print(f"[amifuse] FIB allocated at 0x{self._fib_mem.addr:x}-0x{fib_end:x} (size={FileInfoBlockStruct.get_size()})")
         self.mem.w_block(self._fib_mem.addr, b"\x00" * FileInfoBlockStruct.get_size())
         return self._fib_mem
 
@@ -824,12 +804,17 @@ class HandlerBridge:
                 print(f"[amifuse] list_dir: Examine OK dir_name='{dir_info['name']}' type={dir_info['dir_type']}")
             # Don't add the first entry - it's the directory itself, not a child
             # Iterate via ExamineNext to get actual directory contents
-            for _ in range(256):
+            for iter_num in range(256):
                 self.launcher.send_examine_next(self.state, lock_bptr, fib_mem.addr)
                 replies = self._run_until_replies()
                 if not replies or replies[-1][2] == 0:
+                    if self._debug:
+                        res2 = replies[-1][3] if replies else -1
+                        print(f"[amifuse] list_dir: ExamineNext #{iter_num} ended res2={res2}")
                     break
                 entry = _parse_fib(self.mem, fib_mem.addr)
+                if self._debug:
+                    print(f"[amifuse] list_dir: ExamineNext #{iter_num} name='{entry['name']}' type={entry['dir_type']}")
                 if not entry["name"]:
                     break
                 entries.append(entry)
