@@ -78,18 +78,20 @@ class HandlerBridge:
         trace: bool = False,
         partition: Optional[str] = None,
         adf_info=None,
+        iso_info=None,
     ):
         self._lock = threading.RLock()  # Reentrant lock for thread safety
         self._debug = debug
         self._adf_info = adf_info
+        self._iso_info = iso_info
         # For MBR images with multiple 0x76 partitions, find the right one
         mbr_idx = None
-        if partition and adf_info is None:
+        if partition and adf_info is None and iso_info is None:
             from .rdb_inspect import find_partition_mbr_index
             mbr_idx = find_partition_mbr_index(image, block_size, partition)
         self.backend = BlockDeviceBackend(
             image, block_size=block_size, read_only=read_only, adf_info=adf_info,
-            mbr_partition_index=mbr_idx,
+            iso_info=iso_info, mbr_partition_index=mbr_idx,
         )
         self.backend.open()
         self.vh = VamosHandlerRuntime()
@@ -102,9 +104,14 @@ class HandlerBridge:
         # Build DeviceNode/FSSM using seglist bptr
         ba = BootstrapAllocator(
             self.vh, image, partition=partition, adf_info=adf_info,
-            mbr_partition_index=mbr_idx,
+            iso_info=iso_info, mbr_partition_index=mbr_idx,
         )
-        handler_name = "DF0:" if adf_info else "DH0:"
+        if adf_info:
+            handler_name = "DF0:"
+        elif iso_info:
+            handler_name = "CD0:"
+        else:
+            handler_name = "DH0:"
         boot = ba.alloc_all(handler_seglist_baddr=seg_baddr, handler_seglist_bptr=seg_baddr, handler_name=handler_name)
         self._partition_index = boot["part"].num if boot.get("part") else 0
 
@@ -118,6 +125,11 @@ class HandlerBridge:
                 print(f"[amifuse]   Type: {floppy_type} floppy")
                 print(f"[amifuse]   Cylinders={adf_info.cylinders} Heads={adf_info.heads} Sectors={adf_info.sectors_per_track}")
                 print(f"[amifuse]   Total blocks: {adf_info.total_blocks}")
+            elif iso_info:
+                print(f"[amifuse] ISO 9660 geometry:")
+                print(f"[amifuse]   Volume: {iso_info.volume_id}")
+                print(f"[amifuse]   Block size: {iso_info.block_size}")
+                print(f"[amifuse]   Total blocks: {iso_info.total_blocks}")
             else:
                 dos_env = part.part_blk.dos_env
                 # Use partition geometry from DosEnvec, not disk geometry
@@ -133,7 +145,7 @@ class HandlerBridge:
                 print(f"[amifuse]   Calculated: blk_per_cyl={blk_per_cyl} start_blk={start_blk} num_blk={num_blk}")
 
         # Check that the partition data is within the image file
-        if boot.get("part") and not adf_info:
+        if boot.get("part") and not adf_info and not iso_info:
             dos_env = boot["part"].part_blk.dos_env
             blk_per_cyl = dos_env.surfaces * dos_env.blk_per_trk
             part_end_byte = (dos_env.high_cyl + 1) * blk_per_cyl * self.backend.block_size
@@ -1976,10 +1988,11 @@ def mount_fuse(
     icons: bool = False,
 ):
     import amitools.fs.DosType as DosType
-    from .rdb_inspect import detect_adf
+    from .rdb_inspect import detect_adf, detect_iso
 
     # First, check if this is an ADF (floppy disk image)
     adf_info = detect_adf(image)
+    iso_info = None
 
     if adf_info is not None:
         # ADF floppy detected - use DF0 as the partition name
@@ -1998,31 +2011,46 @@ def mount_fuse(
         driver_desc = str(driver)
         temp_driver = None
     else:
-        # HDF/RDB image - get partition info
-        adf_info = None  # Ensure it's None for later checks
-        try:
-            part_name = get_partition_name(image, block_size, partition)
-        except IOError as e:
-            raise SystemExit(f"Error: {e}")
+        # Check for ISO 9660 image
+        iso_info = detect_iso(image)
 
-        # If no driver specified, try to extract from RDB
-        temp_driver = None
-        driver_desc = None
-        if driver is None:
+        if iso_info is not None:
+            part_name = "CD0"
+
+            if driver is None:
+                raise SystemExit(
+                    f"ISO 9660 image detected (volume: {iso_info.volume_id}).\n"
+                    "ISO images don't contain embedded filesystem drivers.\n"
+                    "You need to specify a filesystem handler with --driver\n"
+                    "For ISO 9660, use CDFileSystem from an AmigaOS installation."
+                )
+            driver_desc = str(driver)
+            temp_driver = None
+        else:
+            # HDF/RDB image - get partition info
             try:
-                result = extract_embedded_driver(image, block_size, partition)
+                part_name = get_partition_name(image, block_size, partition)
             except IOError as e:
                 raise SystemExit(f"Error: {e}")
-            if result is None:
-                raise SystemExit(
-                    "No embedded filesystem driver found for this partition.\n"
-                    "You need to specify a filesystem handler with --driver"
-                )
-            temp_driver, dt_str, dostype = result
-            driver = temp_driver
-            driver_desc = f"{dt_str}/0x{dostype:08x} (from RDB)"
-        else:
-            driver_desc = str(driver)
+
+            # If no driver specified, try to extract from RDB
+            temp_driver = None
+            driver_desc = None
+            if driver is None:
+                try:
+                    result = extract_embedded_driver(image, block_size, partition)
+                except IOError as e:
+                    raise SystemExit(f"Error: {e}")
+                if result is None:
+                    raise SystemExit(
+                        "No embedded filesystem driver found for this partition.\n"
+                        "You need to specify a filesystem handler with --driver"
+                    )
+                temp_driver, dt_str, dostype = result
+                driver = temp_driver
+                driver_desc = f"{dt_str}/0x{dostype:08x} (from RDB)"
+            else:
+                driver_desc = str(driver)
 
     # Auto-create mountpoint on macOS/Windows if not specified
     from . import platform as plat
@@ -2046,6 +2074,8 @@ def mount_fuse(
     if adf_info is not None:
         floppy_type = "HD" if adf_info.is_hd else "DD"
         print(f"Mounting ADF floppy ({floppy_type}) from {image}")
+    elif iso_info is not None:
+        print(f"Mounting ISO 9660 image ({iso_info.volume_id}) from {image}")
     else:
         print(f"Mounting partition '{part_name}' from {image}")
     print(f"Filesystem driver: {driver_desc}")
@@ -2073,6 +2103,7 @@ def mount_fuse(
         trace=trace,
         partition=partition,
         adf_info=adf_info,
+        iso_info=iso_info,
     )
 
     # Let default signal handling work - FUSE will call destroy() on unmount

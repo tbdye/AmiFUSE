@@ -11,7 +11,7 @@ from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice  # type: ignore
 
 from .amiga_structs import DosEnvecStruct, FileSysStartupMsgStruct, DeviceNodeStruct
 from amitools.vamos.libstructs.exec_ import MsgPortStruct, ListStruct, NodeType  # type: ignore
-from .rdb_inspect import detect_adf, ADFInfo
+from .rdb_inspect import detect_adf, ADFInfo, ISOInfo
 
 
 class SyntheticDosEnv:
@@ -49,8 +49,45 @@ class SyntheticPartition:
         return self.adf_info.total_blocks
 
 
+class SyntheticIsoDosEnv:
+    """Synthetic DosEnvec-like object for ISO 9660 images."""
+    def __init__(self, iso_info: ISOInfo):
+        self.size = 16  # de_TableSize
+        self.block_size = iso_info.block_size // 4  # de_SizeBlock in longwords
+        self.sec_org = 0
+        self.surfaces = iso_info.heads
+        self.sec_per_blk = 1
+        self.blk_per_trk = iso_info.sectors_per_track
+        self.reserved = 0
+        self.pre_alloc = 0
+        self.interleave = 0
+        self.low_cyl = 0
+        self.high_cyl = iso_info.cylinders - 1
+        self.num_buffer = 5
+        self.buf_mem_type = 0
+        self.max_transfer = 0x7FFFFFFF
+        self.mask = 0xFFFFFFFF
+        self.boot_pri = 0
+        self.dos_type = 0
+        self.baud = 0
+        self.control = 0
+        self.boot_blocks = 0
+
+
+class SyntheticIsoPartition:
+    """Synthetic partition info for ISO images."""
+    def __init__(self, iso_info: ISOInfo):
+        self.num = 0
+        self.iso_info = iso_info
+
+    def get_num_blocks(self):
+        return self.iso_info.total_blocks
+
+
 class BootstrapAllocator:
-    def __init__(self, vh, image_path: Path, block_size=512, partition=None, adf_info: Optional[ADFInfo] = None, mbr_partition_index=None):
+    def __init__(self, vh, image_path: Path, block_size=512, partition=None,
+                 adf_info: Optional[ADFInfo] = None, iso_info: Optional[ISOInfo] = None,
+                 mbr_partition_index=None):
         self.vh = vh
         self.alloc = vh.alloc
         self.mem = vh.alloc.get_mem()
@@ -58,6 +95,7 @@ class BootstrapAllocator:
         self.block_size = block_size
         self.partition = partition  # name, index, or None for first
         self.adf_info = adf_info  # Pre-detected ADF info, if any
+        self.iso_info = iso_info  # Pre-detected ISO info, if any
         self.mbr_partition_index = mbr_partition_index  # For MBR disks with multiple 0x76 partitions
 
     def _read_partition_env(self):
@@ -86,10 +124,21 @@ class BootstrapAllocator:
         part = SyntheticPartition(self.adf_info)
         return de, blk, None, part  # rd is None for ADF
 
+    def _read_iso_env(self):
+        """Create synthetic partition info for ISO images."""
+        blk = RawBlockDevice(str(self.image_path), read_only=True,
+                             block_bytes=self.iso_info.block_size)
+        blk.open()
+        de = SyntheticIsoDosEnv(self.iso_info)
+        part = SyntheticIsoPartition(self.iso_info)
+        return de, blk, None, part  # rd is None for ISO
+
     def alloc_all(self, handler_seglist_baddr, handler_seglist_bptr, handler_name="PFS0:"):
-        # Use ADF synthetic partition if adf_info is set, otherwise read from RDB
+        # Use ADF/ISO synthetic partition if detected, otherwise read from RDB
         if self.adf_info is not None:
             de, blk, rd, part = self._read_adf_env()
+        elif self.iso_info is not None:
+            de, blk, rd, part = self._read_iso_env()
         else:
             de, blk, rd, part = self._read_partition_env()
         # DosEnvec

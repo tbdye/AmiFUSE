@@ -32,13 +32,15 @@ from .startup_runner import HandlerLauncher  # noqa: E402
 class BlockDeviceBackend:
     """Thin wrapper around a host file to provide block reads/writes."""
 
-    def __init__(self, image: Path, block_size: Optional[int] = None, read_only=True, adf_info=None, mbr_partition_index=None):
+    def __init__(self, image: Path, block_size: Optional[int] = None, read_only=True,
+                 adf_info=None, iso_info=None, mbr_partition_index=None):
         self.image = image
         self.block_size = block_size or 512
         self.read_only = read_only
         self.blkdev: Optional[RawBlockDevice] = None
         self.rdb: Optional[RDisk] = None
         self.adf_info = adf_info  # ADFInfo if this is a floppy image
+        self.iso_info = iso_info  # ISOInfo if this is an ISO image
         self.mbr_partition_index = mbr_partition_index  # For MBR disks with multiple 0x76 partitions
         self.mbr_context = None  # MBRContext if opened via MBR partition
 
@@ -69,6 +71,21 @@ class BlockDeviceBackend:
             self.heads = self.adf_info.heads
             self.secs = self.adf_info.sectors_per_track
             self.total_blocks = self.adf_info.total_blocks
+            return
+
+        # For ISO images, skip RDB/MBR parsing and use synthetic geometry
+        if self.iso_info is not None:
+            self.blkdev = RawBlockDevice(
+                str(self.image), read_only=self.read_only,
+                block_bytes=self.iso_info.block_size
+            )
+            self.blkdev.open()
+            self.rdb = None
+            self.block_size = self.iso_info.block_size
+            self.cyls = self.iso_info.cylinders
+            self.heads = self.iso_info.heads
+            self.secs = self.iso_info.sectors_per_track
+            self.total_blocks = self.iso_info.total_blocks
             return
 
         # Try opening as direct RDB first (scan blocks 0-15)
@@ -190,6 +207,11 @@ class BlockDeviceBackend:
             return (
                 f"{self.image} ADF ({floppy_type}) cyls={self.cyls} heads={self.heads} "
                 f"secs={self.secs} block={self.block_size}"
+            )
+        if self.iso_info is not None:
+            return (
+                f"{self.image} ISO 9660 ({self.iso_info.volume_id}) "
+                f"blocks={self.total_blocks} block={self.block_size}"
             )
         assert self.rdb is not None
         pd = self.rdb.rdb.phy_drv

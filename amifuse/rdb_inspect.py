@@ -37,6 +37,17 @@ class ADFInfo:
     total_blocks: int       # Total number of blocks
 
 
+@dataclass
+class ISOInfo:
+    """Information about an ISO 9660 image."""
+    block_size: int         # Always 2048 for ISO 9660
+    cylinders: int          # Synthetic geometry
+    heads: int              # Always 1
+    sectors_per_track: int  # Always 1
+    total_blocks: int       # image_size // block_size
+    volume_id: str          # Volume identifier from PVD
+
+
 # MBR partition type for Amiga RDB partition (used by Emu68)
 MBR_TYPE_AMIGA_RDB = 0x76
 
@@ -229,6 +240,59 @@ def detect_adf(image: Path) -> Optional[ADFInfo]:
         sectors_per_track=sectors_per_track,
         block_size=512,
         total_blocks=total_blocks,
+    )
+
+
+# ISO 9660 constants
+ISO_BLOCK_SIZE = 2048
+ISO_PVD_SECTOR = 16  # Primary Volume Descriptor is at sector 16
+
+
+def detect_iso(image: Path) -> Optional[ISOInfo]:
+    """Detect if image is an ISO 9660 filesystem.
+
+    Checks for the Primary Volume Descriptor at sector 16:
+    - Byte 0: type code 0x01 (PVD)
+    - Bytes 1-5: "CD001" standard identifier
+
+    Returns ISOInfo if detected, None otherwise.
+    """
+    try:
+        size = os.path.getsize(image)
+    except OSError:
+        return None
+
+    # Must be large enough to contain the PVD
+    pvd_offset = ISO_PVD_SECTOR * ISO_BLOCK_SIZE
+    if size < pvd_offset + ISO_BLOCK_SIZE:
+        return None
+
+    try:
+        with open(image, 'rb') as f:
+            f.seek(pvd_offset)
+            pvd = f.read(ISO_BLOCK_SIZE)
+    except OSError:
+        return None
+
+    if len(pvd) < 6:
+        return None
+
+    # Check PVD signature: type 0x01, identifier "CD001"
+    if pvd[0] != 0x01 or pvd[1:6] != b'CD001':
+        return None
+
+    # Extract volume identifier (bytes 40-71, 32 chars, space-padded)
+    volume_id = pvd[40:72].decode('ascii', errors='replace').rstrip()
+
+    total_blocks = size // ISO_BLOCK_SIZE
+
+    return ISOInfo(
+        block_size=ISO_BLOCK_SIZE,
+        cylinders=total_blocks,
+        heads=1,
+        sectors_per_track=1,
+        total_blocks=total_blocks,
+        volume_id=volume_id,
     )
 
 
