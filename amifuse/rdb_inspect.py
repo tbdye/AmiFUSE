@@ -177,7 +177,9 @@ class OffsetBlockDevice:
 
     def close(self):
         """Close the underlying base device."""
-        self.base.close()
+        if self.base is not None:
+            self.base.close()
+            self.base = None
 
     def open(self):
         """Open does nothing - base device should already be open."""

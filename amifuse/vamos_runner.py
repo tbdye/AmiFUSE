@@ -257,15 +257,24 @@ class VamosHandlerRuntime:
         return seg_baddr
 
     def shutdown(self):
+        # Handlers may leave internal library/device state in a partially
+        # torn-down state by the time AmiFuse unmounts. Calling
+        # close_base_libs() here can end up touching stale Library structs
+        # during open-count updates, which crashes inside machine68k. For this
+        # short-lived runtime we let the lib manager's shutdown path decide
+        # what can still be expunged safely and then tear down the machine.
         if self.slm:
-            self.slm.close_base_libs()
             self.slm.cleanup()
+            self.slm = None
         if self.path_mgr:
             self.path_mgr.shutdown()
+            self.path_mgr = None
         if self.mem_map:
             self.mem_map.cleanup()
+            self.mem_map = None
         if self.machine:
             self.machine.cleanup()
+            self.machine = None
         if self._temp_dir:
             self._temp_dir.cleanup()
             self._temp_dir = None

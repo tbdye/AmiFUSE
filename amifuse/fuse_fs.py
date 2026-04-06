@@ -382,9 +382,11 @@ class HandlerBridge:
         shutdown = getattr(getattr(self, "vh", None), "shutdown", None)
         if shutdown is not None:
             shutdown()
+            self.vh = None
         backend = getattr(self, "backend", None)
         if backend is not None:
             backend.close()
+            self.backend = None
 
     def _set_saved_main_reg(self, reg_num: int, value: int):
         """Mirror manual register changes into the saved main handler state."""
@@ -2275,14 +2277,12 @@ class AmigaFuseFS(Operations):
                 self.bridge.flush_volume()
         except Exception as e:
             print(f"[amifuse] WARNING: flush failed: {e}", flush=True)
-        # Shut down the m68k runtime (frees machine, memory maps, temp files)
         try:
             shutdown = getattr(getattr(self.bridge, "vh", None), "shutdown", None)
             if shutdown is not None:
                 shutdown()
         except Exception as e:
             print(f"[amifuse] WARNING: runtime shutdown failed: {e}", flush=True)
-        # Close the block device backend (releases file handle / image lock)
         try:
             backend = getattr(self.bridge, "backend", None)
             if backend is not None:

@@ -181,8 +181,10 @@ class BlockDeviceBackend:
     def close(self):
         if self.rdb:
             self.rdb.close()
+            self.rdb = None
         if self.blkdev:
             self.blkdev.close()
+            self.blkdev = None
 
     def read_blocks(self, blk_num: int, num_blks: int = 1) -> bytes:
         if not self.blkdev:

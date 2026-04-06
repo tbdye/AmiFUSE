@@ -524,9 +524,9 @@ def _find_sample_files(bridge, limit_dirs: int = 8):
 
 
 def _shutdown_bridge(bridge):
-    shutdown = getattr(getattr(bridge, "vh", None), "shutdown", None)
-    if shutdown is not None:
-        shutdown()
+    close = getattr(bridge, "close", None)
+    if close is not None:
+        close()
 
 
 def _split_parent(path: str) -> tuple[str, str]:
