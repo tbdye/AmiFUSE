@@ -2950,6 +2950,7 @@ commands:
     --volname NAME            Override volume name (defaults to partition name).
     --daemon                  Detach after mounting (default on macOS/Linux).
     --interactive             Stay attached; Ctrl+C unmounts the filesystem.
+                              Windows uses this mode by default.
     --write                   Enable read-write mode (experimental).
     --icons                   Convert Amiga .info icons to native macOS icons (experimental).
     --debug                   Enable debug logging of FUSE operations.
@@ -3015,7 +3016,7 @@ commands:
         dest="foreground",
         action="store_const",
         const=True,
-        help="Stay attached to the terminal; press Ctrl+C to unmount.",
+        help="Stay attached to the terminal; press Ctrl+C to unmount (default on Windows).",
     )
     mount_parser.add_argument(
         "--debug", action="store_true", help="Enable debug logging of FUSE operations."

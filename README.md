@@ -94,7 +94,7 @@ amifuse mount pfs.hdf
 mkdir -p ./mnt
 amifuse mount pfs.hdf --mountpoint ./mnt
 
-# Keep the process attached to the terminal if you want Ctrl+C to unmount
+# Stay attached to the terminal if you want Ctrl+C to unmount
 amifuse mount pfs.hdf --interactive
 ```
 
@@ -158,6 +158,18 @@ amifuse mount /path/to/disk.hdf
 | `--write` | No | Enable read-write mode (experimental, use with caution) |
 | `--icons` | No | Convert Amiga .info icons to native icons (experimental, macOS only) |
 
+Mount lifecycle:
+
+- macOS and Linux default to daemon mode. The mount keeps running after the
+  command returns, and you normally tear it down with `amifuse unmount
+  <mountpoint>`.
+- `--interactive` / `--foreground` keeps AmiFUSE attached to the terminal.
+  Use this for debugging or when you want `Ctrl+C` to unmount from the same
+  shell.
+- Windows defaults to interactive mode because there is no standalone
+  unmount command there yet.
+- `--profile` implies interactive mode.
+
 ### Examples
 
 ```bash
@@ -183,14 +195,14 @@ amifuse mount workbench.adf --driver L/FastFileSystem
 # Enable native icons (macOS only, converts Amiga .info files)
 amifuse mount disk.hdf --icons
 
-# Keep the mount in the foreground for debugging
+# Keep the mount attached for debugging
 amifuse mount disk.hdf --interactive
 
 # Browse the filesystem
 ls /Volumes/PDH0   # macOS
 ls ./mnt           # Linux
 
-# Unmount when done
+# Unmount a daemon mount when done
 amifuse unmount /Volumes/PDH0   # macOS
 amifuse unmount ./mnt           # Linux
 ```
@@ -273,6 +285,10 @@ The `--icons` flag enables conversion of Amiga `.info` icon files to native Find
 ## Notes
 
 - The filesystem is mounted **read-only** by default; use `--write` for experimental read-write support
-- Mounts default to daemon mode on macOS/Linux; use `--interactive` if you want Ctrl+C to unmount from the same terminal
+- macOS and Linux default to daemon mode; use `--interactive` if you want
+  Ctrl+C to unmount from the same terminal
+- Use `amifuse unmount <mountpoint>` to tear down daemon mounts
+- Windows defaults to interactive mode until it grows a standalone unmount
+  path
 - macOS Finder/Spotlight indexing is automatically disabled to improve performance
 - First directory traversal may be slow as the handler processes each path; subsequent accesses are cached

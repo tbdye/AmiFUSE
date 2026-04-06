@@ -173,6 +173,22 @@ class TestMountFuseOptions:
         assert kwargs is not None, "FUSE was not called"
         assert kwargs["foreground"] is False
 
+    def test_mount_defaults_to_daemon_on_darwin(self, monkeypatch, mock_mount_fuse_deps):
+        """macOS mounts default to background mode."""
+        monkeypatch.setattr("sys.platform", "darwin")
+        from amifuse.fuse_fs import mount_fuse
+
+        mount_fuse(
+            image=Path("/tmp/test.hdf"),
+            driver=None,
+            mountpoint=None,
+            block_size=None,
+        )
+
+        kwargs = mock_mount_fuse_deps["fuse_kwargs"]
+        assert kwargs is not None, "FUSE was not called"
+        assert kwargs["foreground"] is False
+
     def test_mount_defaults_to_foreground_on_windows(self, monkeypatch, mock_mount_fuse_deps):
         """Windows keeps the mount attached by default."""
         monkeypatch.setattr("sys.platform", "win32")
