@@ -26,6 +26,10 @@ from fixture_paths import ensure_downloaded_fixture
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AMITOOLS_ROOT = REPO_ROOT / "amitools"
 DEFAULT_TIMEOUT = 60.0
+LOAD_FILE_COUNT = 256
+LOAD_FILE_SIZE_BYTES = 256
+LOAD_READ_COUNT = 1600
+LOAD_READ_SIZE_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,10 @@ class Fixture:
     optional: bool = False
     download_url: Optional[str] = None
     seed_download_url: Optional[str] = None
+    load_file_count: int = 0
+    load_file_size_bytes: int = 0
+    load_read_count: int = 0
+    load_read_size_bytes: int = 0
 
 
 FIXTURES: Dict[str, Fixture] = {
@@ -80,6 +88,22 @@ FIXTURES: Dict[str, Fixture] = {
         image_size_mb=8,
         seed_image=READONLY_DIR / "pfs.hdf",
         default_run=False,
+    ),
+    "pfs3-load": Fixture(
+        key="pfs3-load",
+        fs_name="PFS3 load",
+        image=GENERATED_DIR / "pfs3_load.hdf",
+        driver=DRIVERS_DIR / "pfs3aio",
+        partition="PDH0",
+        mode="load",
+        image_kind="rdb-hdf",
+        image_size_mb=8,
+        seed_image=READONLY_DIR / "pfs.hdf",
+        default_run=False,
+        load_file_count=LOAD_FILE_COUNT,
+        load_file_size_bytes=LOAD_FILE_SIZE_BYTES,
+        load_read_count=LOAD_READ_COUNT,
+        load_read_size_bytes=LOAD_READ_SIZE_BYTES,
     ),
     "pfs3-fmt": Fixture(
         key="pfs3-fmt",
@@ -180,6 +204,22 @@ FIXTURES: Dict[str, Fixture] = {
         seed_image=READONLY_DIR / "sfs.hdf",
         default_run=False,
     ),
+    "sfs-load": Fixture(
+        key="sfs-load",
+        fs_name="SFS load",
+        image=GENERATED_DIR / "sfs_load.hdf",
+        driver=DRIVERS_DIR / "SmartFilesystem",
+        partition="SDH0",
+        mode="load",
+        image_kind="rdb-hdf",
+        image_size_mb=8,
+        seed_image=READONLY_DIR / "sfs.hdf",
+        default_run=False,
+        load_file_count=LOAD_FILE_COUNT,
+        load_file_size_bytes=LOAD_FILE_SIZE_BYTES,
+        load_read_count=LOAD_READ_COUNT,
+        load_read_size_bytes=LOAD_READ_SIZE_BYTES,
+    ),
     "sfs-fmt": Fixture(
         key="sfs-fmt",
         fs_name="SFS fmt",
@@ -227,6 +267,23 @@ FIXTURES: Dict[str, Fixture] = {
         seed_image=READONLY_DIR / "Default.hdf",
         default_run=False,
         seed_download_url=DEFAULT_HDF_URL,
+    ),
+    "ffs-load": Fixture(
+        key="ffs-load",
+        fs_name="FFS load",
+        image=GENERATED_DIR / "ffs_load.hdf",
+        driver=DRIVERS_DIR / "FastFileSystem",
+        partition="QDH0",
+        mode="load",
+        image_kind="rdb-hdf",
+        image_size_mb=512,
+        seed_image=READONLY_DIR / "Default.hdf",
+        default_run=False,
+        seed_download_url=DEFAULT_HDF_URL,
+        load_file_count=LOAD_FILE_COUNT,
+        load_file_size_bytes=LOAD_FILE_SIZE_BYTES,
+        load_read_count=LOAD_READ_COUNT,
+        load_read_size_bytes=LOAD_READ_SIZE_BYTES,
     ),
     "ffs-fmt": Fixture(
         key="ffs-fmt",
@@ -652,6 +709,10 @@ def _cleanup_generated_image(fixture: Fixture):
         fixture.image.unlink()
 
 
+def _pattern_bytes(size: int, seed: int = 0) -> bytes:
+    return bytes(((idx + seed) % 251 for idx in range(size)))
+
+
 def _exercise_rw_session(bridge):
     rw_dir = "/AmiFuseRW"
     created_path = f"{rw_dir}/hello.txt"
@@ -691,6 +752,65 @@ def _exercise_rw_session(bridge):
         "flush_s": flush_s,
         "renamed_path": renamed_path,
         "payload": payload,
+    }
+
+
+def _exercise_load_session(bridge, fixture: Fixture):
+    load_dir = "/AmiFuseLoad"
+    large_path = f"{load_dir}/bulk-read.bin"
+    small_payload = _pattern_bytes(fixture.load_file_size_bytes, seed=17)
+    large_payload = _pattern_bytes(fixture.load_read_size_bytes, seed=83)
+
+    list_root_s, root_entries = _timed(bridge.list_dir_path, "/")
+    root_names = [entry["name"] for entry in root_entries]
+    mkdir_s, _ = _timed(_create_dir_path, bridge, load_dir)
+    create_large_s, _ = _timed(_write_file_path, bridge, large_path, large_payload)
+
+    create_many_start = time.perf_counter()
+    for idx in range(fixture.load_file_count):
+        path = f"{load_dir}/f{idx:04d}.bin"
+        _write_file_path(bridge, path, small_payload)
+    create_many_s = time.perf_counter() - create_many_start
+
+    list_load_dir_s, load_entries = _timed(bridge.list_dir_path, load_dir)
+    expected_entries = fixture.load_file_count + 1
+    if len(load_entries) != expected_entries:
+        raise RuntimeError(
+            f"load dir entry count mismatch: {len(load_entries)} != {expected_entries}"
+        )
+
+    read_many_start = time.perf_counter()
+    for _ in range(fixture.load_read_count):
+        data = bridge.read_file(large_path, fixture.load_read_size_bytes, 0)
+        if len(data) != len(large_payload):
+            raise RuntimeError(
+                f"short repeated read: {len(data)} != {len(large_payload)}"
+            )
+        if data[:64] != large_payload[:64] or data[-64:] != large_payload[-64:]:
+            raise RuntimeError(f"repeated read content mismatch for {large_path}")
+    read_many_s = time.perf_counter() - read_many_start
+
+    flush_s, _ = _timed(bridge.flush_volume)
+    steady_s = create_large_s + create_many_s + list_load_dir_s + read_many_s + flush_s
+
+    return {
+        "root_entries": root_entries,
+        "root_names": root_names,
+        "list_root_s": list_root_s,
+        "mkdir_s": mkdir_s,
+        "create_large_s": create_large_s,
+        "create_many_s": create_many_s,
+        "list_load_dir_s": list_load_dir_s,
+        "read_many_s": read_many_s,
+        "flush_s": flush_s,
+        "steady_s": steady_s,
+        "load_dir": load_dir,
+        "large_path": large_path,
+        "file_count": fixture.load_file_count,
+        "file_size_bytes": fixture.load_file_size_bytes,
+        "read_iterations": fixture.load_read_count,
+        "read_size_bytes": fixture.load_read_size_bytes,
+        "read_total_bytes": fixture.load_read_count * fixture.load_read_size_bytes,
     }
 
 
@@ -823,9 +943,19 @@ def _run_ro_fixture(fixture: Fixture, HandlerBridge, adf_info, iso_info, inspect
             "verify_read_s": 0.0,
             "delete_s": 0.0,
             "cleanup_flush_s": 0.0,
+            "create_large_s": 0.0,
+            "create_many_s": 0.0,
+            "list_load_dir_s": 0.0,
+            "read_many_s": 0.0,
+            "steady_s": 0.0,
             "total_s": total_s,
             "small_read_bytes": small_read_bytes,
             "large_read_bytes": large_read_bytes,
+            "load_file_count": 0,
+            "load_file_size_bytes": 0,
+            "load_read_count": 0,
+            "load_read_size_bytes": 0,
+            "load_read_total_bytes": 0,
         }
     finally:
         _shutdown_bridge(bridge)
@@ -903,9 +1033,98 @@ def _run_rw_fixture(fixture: Fixture, HandlerBridge, adf_info, iso_info, inspect
         "verify_read_s": verify["verify_read_s"],
         "delete_s": verify["delete_s"],
         "cleanup_flush_s": verify["cleanup_flush_s"],
+        "create_large_s": 0.0,
+        "create_many_s": 0.0,
+        "list_load_dir_s": 0.0,
+        "read_many_s": 0.0,
+        "steady_s": 0.0,
         "total_s": total_s,
         "small_read_bytes": len(session["payload"]),
         "large_read_bytes": len(session["payload"]),
+        "load_file_count": 0,
+        "load_file_size_bytes": 0,
+        "load_read_count": 0,
+        "load_read_size_bytes": 0,
+        "load_read_total_bytes": 0,
+    }
+
+
+def _run_load_fixture(
+    fixture: Fixture,
+    HandlerBridge,
+    adf_info,
+    iso_info,
+    inspect_s,
+    inspect_meta,
+):
+    init_s, bridge = _timed(
+        HandlerBridge,
+        fixture.image,
+        fixture.driver,
+        partition=fixture.partition,
+        read_only=False,
+        adf_info=adf_info,
+        iso_info=iso_info,
+    )
+    try:
+        session = _exercise_load_session(bridge, fixture)
+    finally:
+        _shutdown_bridge(bridge)
+
+    total_s = (
+        inspect_s
+        + init_s
+        + session["list_root_s"]
+        + session["mkdir_s"]
+        + session["steady_s"]
+    )
+    return {
+        "fixture": fixture.key,
+        "fs_name": fixture.fs_name,
+        "image": str(fixture.image),
+        "driver": str(fixture.driver),
+        "partition": fixture.partition,
+        "mode": fixture.mode,
+        "image_kind": fixture.image_kind,
+        "image_size_mb": fixture.image_size_mb,
+        "status": "ok",
+        "inspect": inspect_meta,
+        "root_count": len(session["root_entries"]),
+        "root_names": session["root_names"],
+        "lookup_path": session["large_path"],
+        "small_read_path": session["large_path"],
+        "large_read_path": session["large_path"],
+        "create_image_s": 0.0,
+        "format_s": 0.0,
+        "inspect_s": inspect_s,
+        "init_s": init_s,
+        "list_root_s": session["list_root_s"],
+        "stat_s": 0.0,
+        "small_read_s": 0.0,
+        "large_read_s": 0.0,
+        "mkdir_s": session["mkdir_s"],
+        "create_s": 0.0,
+        "write_s": 0.0,
+        "rename_s": 0.0,
+        "flush_s": session["flush_s"],
+        "remount_s": 0.0,
+        "verify_stat_s": 0.0,
+        "verify_read_s": 0.0,
+        "delete_s": 0.0,
+        "cleanup_flush_s": 0.0,
+        "create_large_s": session["create_large_s"],
+        "create_many_s": session["create_many_s"],
+        "list_load_dir_s": session["list_load_dir_s"],
+        "read_many_s": session["read_many_s"],
+        "steady_s": session["steady_s"],
+        "total_s": total_s,
+        "small_read_bytes": session["read_size_bytes"],
+        "large_read_bytes": session["read_size_bytes"],
+        "load_file_count": session["file_count"],
+        "load_file_size_bytes": session["file_size_bytes"],
+        "load_read_count": session["read_iterations"],
+        "load_read_size_bytes": session["read_size_bytes"],
+        "load_read_total_bytes": session["read_total_bytes"],
     }
 
 
@@ -1035,9 +1254,19 @@ def _run_fmt_fixture(
             "verify_read_s": verify["verify_read_s"],
             "delete_s": verify["delete_s"],
             "cleanup_flush_s": verify["cleanup_flush_s"],
+            "create_large_s": 0.0,
+            "create_many_s": 0.0,
+            "list_load_dir_s": 0.0,
+            "read_many_s": 0.0,
+            "steady_s": 0.0,
             "total_s": total_s,
             "small_read_bytes": len(session["payload"]),
             "large_read_bytes": len(session["payload"]),
+            "load_file_count": 0,
+            "load_file_size_bytes": 0,
+            "load_read_count": 0,
+            "load_read_size_bytes": 0,
+            "load_read_total_bytes": 0,
         }
     finally:
         _cleanup_generated_image(fixture)
@@ -1057,7 +1286,7 @@ def _run_fixture_worker(fixture_key: str):
     if fixture.mode == "ro":
         if not fixture.image.exists():
             missing.append(f"image {fixture.image}")
-    elif fixture.mode == "rw":
+    elif fixture.mode in ("rw", "load"):
         if fixture.seed_image is None:
             missing.append(f"seed image missing for {fixture.key}")
         elif not fixture.seed_image.exists():
@@ -1079,6 +1308,8 @@ def _run_fixture_worker(fixture_key: str):
     HandlerBridge, format_volume, detect_adf, detect_iso, open_rdisk = _load_runtime()
     if fixture.mode == "rw":
         _prepare_rw_image(fixture)
+    if fixture.mode == "load":
+        _prepare_rw_image(fixture)
     if fixture.mode == "fmt":
         return _run_fmt_fixture(
             fixture,
@@ -1099,6 +1330,10 @@ def _run_fixture_worker(fixture_key: str):
         )
     if fixture.mode == "rw":
         return _run_rw_fixture(
+            fixture, HandlerBridge, adf_info, iso_info, inspect_s, inspect_meta
+        )
+    if fixture.mode == "load":
+        return _run_load_fixture(
             fixture, HandlerBridge, adf_info, iso_info, inspect_s, inspect_meta
         )
     return _run_ro_fixture(
@@ -1168,6 +1403,11 @@ TIMING_KEYS = (
     "verify_read_s",
     "delete_s",
     "cleanup_flush_s",
+    "create_large_s",
+    "create_many_s",
+    "list_load_dir_s",
+    "read_many_s",
+    "steady_s",
     "total_s",
 )
 
@@ -1228,6 +1468,11 @@ def _aggregate_fixture_runs(
         "large_read_path",
         "small_read_bytes",
         "large_read_bytes",
+        "load_file_count",
+        "load_file_size_bytes",
+        "load_read_count",
+        "load_read_size_bytes",
+        "load_read_total_bytes",
     ):
         summary[key] = first.get(key)
 
@@ -1252,6 +1497,7 @@ def _render_markdown(results: List[Dict[str, object]]) -> str:
     ro_results = [result for result in results if result.get("mode") == "ro"]
     rw_results = [result for result in results if result.get("mode") == "rw"]
     fmt_results = [result for result in results if result.get("mode") == "fmt"]
+    load_results = [result for result in results if result.get("mode") == "load"]
     lines = [
         "# AmiFuse Matrix Run",
         "",
@@ -1421,6 +1667,72 @@ def _render_markdown(results: List[Dict[str, object]]) -> str:
                 "-",
                 "-",
                 "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "<br>".join(notes),
+            ]
+        lines.append("| " + " | ".join(row) + " |")
+    if load_results:
+        lines.extend(
+            [
+                "",
+                "## Load Benchmark",
+                "",
+                "| FS | Status | Inspect med | Init med | Root med | Mkdir med | Create large med | Create files med | List load dir med | Read loop med | Flush med | Steady min/med/max | Total min/med/max | Notes |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+    for result in load_results:
+        notes = []
+        if result["status"] == "ok":
+            notes.append(f"runs={result['runs']}")
+            notes.append(f"root={result['root_count']}")
+            notes.append(
+                f"create={result.get('load_file_count', 0)}x{int(result.get('load_file_size_bytes', 0))}B"
+            )
+            notes.append(
+                f"read={result.get('load_read_count', 0)}x{int(result.get('load_read_size_bytes', 0)) // (1024 * 1024)}MiB"
+            )
+            if result.get("lookup_path"):
+                notes.append(f"read-path={result['lookup_path']}")
+            steady_range = " / ".join(
+                [
+                    _format_seconds(float(result["steady_s_min"])),
+                    _format_seconds(float(result["steady_s_median"])),
+                    _format_seconds(float(result["steady_s_max"])),
+                ]
+            )
+            row = [
+                result["fs_name"],
+                "ok",
+                _format_seconds(float(result["inspect_s_median"])),
+                _format_seconds(float(result["init_s_median"])),
+                _format_seconds(float(result["list_root_s_median"])),
+                _format_seconds(float(result["mkdir_s_median"])),
+                _format_seconds(float(result["create_large_s_median"])),
+                _format_seconds(float(result["create_many_s_median"])),
+                _format_seconds(float(result["list_load_dir_s_median"])),
+                _format_seconds(float(result["read_many_s_median"])),
+                _format_seconds(float(result["flush_s_median"])),
+                steady_range,
+                _format_total_range(result),
+                "<br>".join(notes),
+            ]
+        else:
+            notes.append(f"runs={result.get('runs', 0)}")
+            notes.append(result.get("error", "unknown error"))
+            row = [
+                FIXTURES[result["fixture"]].fs_name,
+                result["status"],
                 "-",
                 "-",
                 "-",
