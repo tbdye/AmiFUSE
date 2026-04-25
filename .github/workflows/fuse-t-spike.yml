@@ -18,7 +18,17 @@ jobs:
           python-version: "3.13"
 
       - name: Install FUSE-T
-        run: brew install fuse-t
+        run: |
+          brew install fuse-t
+          # fusepy looks for libfuse.dylib; FUSE-T provides libfuse-t.dylib
+          # Create a symlink so fusepy's ctypes.find_library("fuse") succeeds
+          FUSET_LIB=$(find /opt/homebrew/lib /usr/local/lib -name 'libfuse-t*.dylib' 2>/dev/null | head -1)
+          if [ -n "$FUSET_LIB" ]; then
+            FUSET_DIR=$(dirname "$FUSET_LIB")
+            echo "Found FUSE-T at $FUSET_LIB"
+            sudo ln -sf "$FUSET_LIB" "$FUSET_DIR/libfuse.dylib" || true
+            echo "DYLD_LIBRARY_PATH=$FUSET_DIR" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify FUSE-T library
         run: |
@@ -123,8 +133,10 @@ jobs:
       - name: Install fuse3
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse3 libfuse3-dev
+          sudo apt-get install -y fuse3 libfuse3-dev libfuse-dev
           sudo modprobe fuse || true
+          # fusepy uses ctypes to find libfuse.so (fuse2 ABI)
+          # libfuse-dev provides the fuse2 compat lib
 
       - name: Install fusepy
         run: pip install fusepy
@@ -258,7 +270,7 @@ jobs:
               print('No free drive letter')
               sys.exit(1)
 
-          mp = f'{drive}:\\'
+          mp = f'{drive}:'
           print(f'Mountpoint: {mp}')
 
           proc = subprocess.Popen(
@@ -285,12 +297,12 @@ jobs:
 
           time.sleep(10)
 
-          mounted = os.path.exists(mp)
-          print(f'os.path.exists({mp}) = {mounted}')
+          mounted = os.path.exists(f'{drive}:\\')
+          print(f'os.path.exists({drive}:\\) = {mounted}')
 
           try:
-              entries = os.listdir(mp)
-              print(f'os.listdir({mp}) = {entries}')
+              entries = os.listdir(f'{drive}:\\')
+              print(f'os.listdir({drive}:\\) = {entries}')
               listdir_ok = True
           except OSError as e:
               print(f'os.listdir failed: {e}')
