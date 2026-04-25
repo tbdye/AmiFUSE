@@ -1,0 +1,318 @@
+name: FUSE Backend Spike
+
+on:
+  push:
+    branches: [spike/fuse-t-compat]
+  workflow_dispatch:
+
+jobs:
+  macos-fuse-t:
+    name: macOS (FUSE-T)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install FUSE-T
+        run: brew install fuse-t
+
+      - name: Verify FUSE-T library
+        run: |
+          ls /usr/local/lib/libfuse-t.dylib 2>/dev/null \
+            || ls /opt/homebrew/lib/libfuse-t.dylib 2>/dev/null \
+            || echo "FUSE-T lib not in standard paths"
+
+      - name: Install fusepy
+        run: pip install fusepy
+
+      - name: Test fusepy import
+        run: |
+          python3 -c "
+          try:
+              from fuse import FUSE, Operations
+              print('SUCCESS: fusepy imported with FUSE-T backend')
+          except EnvironmentError as e:
+              print(f'FAIL (EnvironmentError): {e}')
+              exit(1)
+          except Exception as e:
+              print(f'FAIL ({type(e).__name__}): {e}')
+              exit(1)
+          "
+
+      - name: Test NullFS mount
+        run: |
+          python3 << 'PYEOF'
+          import os, subprocess, sys, tempfile, time
+
+          mp = tempfile.mkdtemp(prefix='fuset_spike_')
+          print(f'Mountpoint: {mp}')
+
+          proc = subprocess.Popen(
+              [sys.executable, '-c', '''
+          import os
+          from fuse import FUSE, Operations
+
+          class NullFS(Operations):
+              def getattr(self, path, fh=None):
+                  if path == '/':
+                      return {'st_mode': 0o40755, 'st_nlink': 2}
+                  raise FileNotFoundError(path)
+              def readdir(self, path, fh):
+                  return ['.', '..']
+
+          mp = os.environ['SPIKE_MP']
+          print(f'Mounting NullFS at {mp}', flush=True)
+          FUSE(NullFS(), mp, foreground=True)
+          '''],
+              env={**os.environ, 'SPIKE_MP': mp},
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+          )
+
+          time.sleep(5)
+
+          mounted = os.path.ismount(mp)
+          print(f'os.path.ismount({mp}) = {mounted}')
+
+          try:
+              entries = os.listdir(mp)
+              print(f'os.listdir({mp}) = {entries}')
+              listdir_ok = True
+          except OSError as e:
+              print(f'os.listdir failed: {e}')
+              listdir_ok = False
+
+          if mounted:
+              subprocess.run(['umount', mp], check=False)
+          proc.terminate()
+          try:
+              stdout, stderr = proc.communicate(timeout=10)
+              print(f'Mount process stdout: {stdout.decode(errors="replace")}')
+              print(f'Mount process stderr: {stderr.decode(errors="replace")}')
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.communicate()
+
+          try:
+              os.rmdir(mp)
+          except OSError:
+              pass
+
+          if mounted or listdir_ok:
+              print('RESULT: FUSE-T + fusepy COMPATIBLE')
+          else:
+              print('RESULT: FUSE-T + fusepy INCOMPATIBLE')
+              sys.exit(1)
+          PYEOF
+
+  linux-fuse3:
+    name: Linux (fuse3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install fuse3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev
+          sudo modprobe fuse || true
+
+      - name: Install fusepy
+        run: pip install fusepy
+
+      - name: Test fusepy import
+        run: |
+          python3 -c "
+          try:
+              from fuse import FUSE, Operations
+              print('SUCCESS: fusepy imported with fuse3 backend')
+          except EnvironmentError as e:
+              print(f'FAIL (EnvironmentError): {e}')
+              exit(1)
+          except Exception as e:
+              print(f'FAIL ({type(e).__name__}): {e}')
+              exit(1)
+          "
+
+      - name: Test NullFS mount
+        run: |
+          python3 << 'PYEOF'
+          import os, subprocess, sys, tempfile, time
+
+          mp = tempfile.mkdtemp(prefix='fuse3_spike_')
+          print(f'Mountpoint: {mp}')
+
+          proc = subprocess.Popen(
+              [sys.executable, '-c', '''
+          import os
+          from fuse import FUSE, Operations
+
+          class NullFS(Operations):
+              def getattr(self, path, fh=None):
+                  if path == '/':
+                      return {'st_mode': 0o40755, 'st_nlink': 2}
+                  raise FileNotFoundError(path)
+              def readdir(self, path, fh):
+                  return ['.', '..']
+
+          mp = os.environ['SPIKE_MP']
+          print(f'Mounting NullFS at {mp}', flush=True)
+          FUSE(NullFS(), mp, foreground=True)
+          '''],
+              env={**os.environ, 'SPIKE_MP': mp},
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+          )
+
+          time.sleep(5)
+
+          mounted = os.path.ismount(mp)
+          print(f'os.path.ismount({mp}) = {mounted}')
+
+          try:
+              entries = os.listdir(mp)
+              print(f'os.listdir({mp}) = {entries}')
+              listdir_ok = True
+          except OSError as e:
+              print(f'os.listdir failed: {e}')
+              listdir_ok = False
+
+          if mounted:
+              subprocess.run(['fusermount3', '-u', mp], check=False)
+          proc.terminate()
+          try:
+              stdout, stderr = proc.communicate(timeout=10)
+              print(f'Mount process stdout: {stdout.decode(errors="replace")}')
+              print(f'Mount process stderr: {stderr.decode(errors="replace")}')
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.communicate()
+
+          try:
+              os.rmdir(mp)
+          except OSError:
+              pass
+
+          if mounted or listdir_ok:
+              print('RESULT: fuse3 + fusepy COMPATIBLE')
+          else:
+              print('RESULT: fuse3 + fusepy INCOMPATIBLE')
+              sys.exit(1)
+          PYEOF
+
+  windows-winfsp:
+    name: Windows (WinFSP)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install WinFSP
+        run: choco install winfsp -y
+
+      - name: Install fusepy
+        run: pip install fusepy
+
+      - name: Test fusepy import
+        shell: python
+        run: |
+          try:
+              from fuse import FUSE, Operations
+              print('SUCCESS: fusepy imported with WinFSP backend')
+          except EnvironmentError as e:
+              print(f'FAIL (EnvironmentError): {e}')
+              exit(1)
+          except Exception as e:
+              print(f'FAIL ({type(e).__name__}): {e}')
+              exit(1)
+
+      - name: Test NullFS mount
+        shell: python
+        run: |
+          import os, string, subprocess, sys, time
+
+          # Find an unused drive letter
+          used = set()
+          for d in string.ascii_uppercase:
+              if os.path.exists(f'{d}:\\'):
+                  used.add(d)
+          drive = None
+          for d in reversed(string.ascii_uppercase):
+              if d not in used:
+                  drive = d
+                  break
+          if not drive:
+              print('No free drive letter')
+              sys.exit(1)
+
+          mp = f'{drive}:\\'
+          print(f'Mountpoint: {mp}')
+
+          proc = subprocess.Popen(
+              [sys.executable, '-c', '''
+          import os
+          from fuse import FUSE, Operations
+
+          class NullFS(Operations):
+              def getattr(self, path, fh=None):
+                  if path in ('/', '\\\\'):
+                      return {'st_mode': 0o40755, 'st_nlink': 2}
+                  raise FileNotFoundError(path)
+              def readdir(self, path, fh):
+                  return ['.', '..']
+
+          mp = os.environ['SPIKE_MP']
+          print(f'Mounting NullFS at {mp}', flush=True)
+          FUSE(NullFS(), mp, foreground=True)
+          '''],
+              env={**os.environ, 'SPIKE_MP': mp},
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+          )
+
+          time.sleep(10)
+
+          mounted = os.path.exists(mp)
+          print(f'os.path.exists({mp}) = {mounted}')
+
+          try:
+              entries = os.listdir(mp)
+              print(f'os.listdir({mp}) = {entries}')
+              listdir_ok = True
+          except OSError as e:
+              print(f'os.listdir failed: {e}')
+              listdir_ok = False
+
+          proc.terminate()
+          try:
+              stdout, stderr = proc.communicate(timeout=10)
+              print(f'Mount process stdout: {stdout.decode(errors="replace")}')
+              print(f'Mount process stderr: {stderr.decode(errors="replace")}')
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.communicate()
+
+          if listdir_ok:
+              print('RESULT: WinFSP + fusepy COMPATIBLE')
+          else:
+              print('RESULT: WinFSP + fusepy INCOMPATIBLE')
+              sys.exit(1)
