@@ -264,6 +264,18 @@ class TestUnregister:
 
         assert not reg.key_exists(reg.HKEY_CURRENT_USER, r"Software\Classes\AmiFUSE.DiskImage")
 
+    def test_unregister_removes_empty_extension_keys(self, fake_registry, tmp_path, monkeypatch):
+        """Extension keys are fully deleted when empty after unregister."""
+        reg, _ = fake_registry
+        monkeypatch.setattr("amifuse.windows_shell.ICON_DIR", tmp_path / "icons")
+
+        from amifuse.windows_shell import register, unregister
+        register([".hdf"])
+        unregister([".hdf"])
+
+        # Extension key should be gone, not left as an empty stub
+        assert not reg.key_exists(reg.HKEY_CURRENT_USER, r"Software\Classes\.hdf")
+
     def test_unregister_preserves_other_apps_default(self, fake_registry, tmp_path, monkeypatch):
         """When another app owns Default, it's preserved."""
         reg, _ = fake_registry

@@ -283,6 +283,34 @@ def _unregister_extension(winreg, ext: str, progid: str) -> None:
     except OSError:
         pass
 
+    # Remove the extension key entirely if it's now empty (no subkeys, no default)
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, ext_path, 0, winreg.KEY_READ)
+        try:
+            has_subkeys = True
+            try:
+                winreg.EnumKey(key, 0)
+            except OSError:
+                has_subkeys = False
+
+            default_empty = True
+            try:
+                val, _ = winreg.QueryValueEx(key, "")
+                if val:
+                    default_empty = False
+            except OSError:
+                pass  # No default value — counts as empty
+
+            if not has_subkeys and default_empty:
+                winreg.CloseKey(key)
+                key = None
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, ext_path)
+        finally:
+            if key is not None:
+                winreg.CloseKey(key)
+    except OSError:
+        pass
+
 
 def _delete_key_recursive(hkey, sub_key: str) -> None:
     """Recursively delete a registry key and all its children."""
