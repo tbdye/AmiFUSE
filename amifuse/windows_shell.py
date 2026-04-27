@@ -317,33 +317,23 @@ def _delete_key_recursive(hkey, sub_key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Icons — pixel-art file-type icons for HDF and ADF
+# Icons — pretty-file-icons style page icons for HDF and ADF, plus tray icon
 # ---------------------------------------------------------------------------
 
-# Color palettes
-_HDF_COLORS = {
-    "body": (0x46, 0x82, 0xB4, 255),       # steel blue
-    "highlight": (0x6C, 0xA6, 0xCD, 255),   # lighter blue
-    "dark": (0x36, 0x64, 0x8B, 255),         # darker blue
-    "outline": (0, 0, 0, 128),               # semi-transparent black
-    "label": (0x7E, 0xBA, 0xDB, 255),        # light label area
-    "spindle": (0x2A, 0x4E, 0x6E, 255),      # dark circle
-    "clear": (0, 0, 0, 0),                   # transparent
-}
+# Shared page template colors
+_PAGE_FILL = (233, 233, 224, 255)       # warm off-white (#E9E9E0)
+_DOG_EAR_FILL = (217, 215, 202, 255)   # slightly darker warm gray (#D9D7CA)
+_PAGE_OUTLINE = (180, 178, 168, 255)    # medium gray for definition
+_BANNER_TEXT = (255, 255, 255, 255)     # white
 
-_ADF_COLORS = {
-    "body": (0x3C, 0xB3, 0x71, 255),        # medium sea green
-    "highlight": (0x66, 0xCD, 0xAA, 255),    # lighter green
-    "dark": (0x2E, 0x8B, 0x57, 255),         # darker green
-    "outline": (0, 0, 0, 128),
-    "slider": (0xC0, 0xC0, 0xC0, 255),       # silver metal slider
-    "slider_dark": (0x90, 0x90, 0x90, 255),   # slider shadow
-    "label": (0xF5, 0xF5, 0xDC, 255),        # beige label
-    "label_line": (0xCC, 0xCC, 0xAA, 255),   # label lines
-    "clear": (0, 0, 0, 0),
-}
+# Banner colors per type
+_ADF_BANNER = (60, 179, 113, 255)       # medium sea green (#3CB371)
+_HDF_BANNER = (212, 160, 23, 255)       # amber/gold (#D4A017)
 
-T = tuple[int, int, int, int]  # BGRA or RGBA pixel type alias (used internally)
+# Tray icon color
+_TRAY_COLOR = (212, 160, 23, 255)       # amber/gold
+
+T = tuple[int, int, int, int]  # RGBA pixel type alias
 
 
 def _new_canvas(size: int) -> list[list[T]]:
@@ -390,192 +380,410 @@ def _draw_outline_rect(canvas: list[list[T]], x0: int, y0: int, x1: int, y1: int
         _set_pixel(canvas, x1 - 1, y, color)
 
 
-def _draw_hdf_16(c: dict[str, T]) -> list[list[T]]:
-    """16x16 hard drive: simplified rectangle with dot."""
+def _draw_filled_circle(canvas: list[list[T]], cx: int, cy: int, r: int, color: T) -> None:
+    """Draw a filled circle."""
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dx * dx + dy * dy <= r * r:
+                _set_pixel(canvas, cx + dx, cy + dy, color)
+
+
+# ---------------------------------------------------------------------------
+# Bitmap fonts for banner text
+# ---------------------------------------------------------------------------
+
+# 3x5 font for 16px icons (tiny, adds texture)
+_FONT_3x5: dict[str, list[list[int]]] = {
+    'A': [[0,1,0],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+    'D': [[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]],
+    'F': [[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,0,0]],
+    'H': [[1,0,1],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+}
+
+# 4x6 font for 32px icons (readable)
+_FONT_4x6: dict[str, list[list[int]]] = {
+    'A': [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]],
+    'D': [[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,1,1,0]],
+    'F': [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,0,0,0],[1,0,0,0]],
+    'H': [[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1],[1,0,0,1]],
+}
+
+# 6x8 font for 48px icons (clearly readable)
+_FONT_6x8: dict[str, list[list[int]]] = {
+    'A': [[0,0,1,1,0,0],[0,1,0,0,1,0],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,1,1,1,1,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1]],
+    'D': [[1,1,1,1,0,0],[1,0,0,0,1,0],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,1,0],[1,1,1,1,0,0]],
+    'F': [[1,1,1,1,1,1],[1,0,0,0,0,0],[1,0,0,0,0,0],[1,1,1,1,0,0],[1,0,0,0,0,0],[1,0,0,0,0,0],[1,0,0,0,0,0],[1,0,0,0,0,0]],
+    'H': [[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,1,1,1,1,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1],[1,0,0,0,0,1]],
+}
+
+
+def _render_text(canvas: list[list[T]], text: str, x: int, y: int,
+                 font: dict[str, list[list[int]]], color: T, spacing: int = 1) -> None:
+    """Render text on canvas using a bitmap font."""
+    cx = x
+    for ch in text:
+        glyph = font.get(ch)
+        if glyph is None:
+            continue
+        for row_i, row in enumerate(glyph):
+            for col_i, bit in enumerate(row):
+                if bit:
+                    _set_pixel(canvas, cx + col_i, y + row_i, color)
+        cx += len(glyph[0]) + spacing
+
+
+def _text_width(text: str, font: dict[str, list[list[int]]], spacing: int = 1) -> int:
+    """Compute pixel width of rendered text."""
+    w = 0
+    for i, ch in enumerate(text):
+        glyph = font.get(ch)
+        if glyph is None:
+            continue
+        w += len(glyph[0])
+        if i < len(text) - 1:
+            w += spacing
+    return w
+
+
+# ---------------------------------------------------------------------------
+# Page icon drawing — shared template
+# ---------------------------------------------------------------------------
+
+
+def _draw_page_icon_16(banner_color: T, text: str) -> list[list[T]]:
+    """16x16 pretty-file-icons page icon."""
     canvas = _new_canvas(16)
-    # Body: 2,2 to 13,13
-    _fill_rect(canvas, 2, 3, 14, 13, c["body"])
-    # Top highlight
-    _fill_rect(canvas, 2, 3, 14, 5, c["highlight"])
-    # Bottom edge
-    _fill_rect(canvas, 2, 12, 14, 13, c["dark"])
-    # Outline
-    _draw_outline_rect(canvas, 2, 3, 14, 13, c["outline"])
-    # Label line
-    _fill_rect(canvas, 4, 5, 12, 6, c["label"])
-    # Spindle dot
-    _set_pixel(canvas, 11, 10, c["spindle"])
-    _set_pixel(canvas, 10, 10, c["spindle"])
-    _set_pixel(canvas, 11, 9, c["spindle"])
-    _set_pixel(canvas, 10, 9, c["spindle"])
+    # Page: x=[3,13), y=[1,15) -> 10px wide, 14px tall
+    px0, py0, px1, py1 = 3, 1, 13, 15
+    ear = 2
+
+    # Page fill (excluding dog-ear)
+    _fill_rect(canvas, px0, py0, px1 - ear, py1, _PAGE_FILL)
+    _fill_rect(canvas, px0, py0 + ear, px1, py1, _PAGE_FILL)
+
+    # Dog-ear fill
+    for i in range(ear):
+        _fill_rect(canvas, px1 - ear + i + 1, py0 + i, px1, py0 + i + 1, _DOG_EAR_FILL)
+
+    # Page outline
+    for y in range(py0, py1):
+        _set_pixel(canvas, px0, y, _PAGE_OUTLINE)          # left
+    for x in range(px0, px1):
+        _set_pixel(canvas, x, py1 - 1, _PAGE_OUTLINE)      # bottom
+    for y in range(py0 + ear, py1):
+        _set_pixel(canvas, px1 - 1, y, _PAGE_OUTLINE)      # right
+    for x in range(px0, px1 - ear):
+        _set_pixel(canvas, x, py0, _PAGE_OUTLINE)           # top
+    # Dog-ear diagonal and crease
+    for i in range(ear + 1):
+        _set_pixel(canvas, px1 - ear + i, py0 + i, _PAGE_OUTLINE)
+    for x in range(px1 - ear, px1):
+        _set_pixel(canvas, x, py0 + ear, _PAGE_OUTLINE)
+
+    # Banner: bottom 4 rows of page
+    bx0, by0, bx1, by1 = px0 + 1, py1 - 5, px1 - 1, py1 - 1
+    _fill_rect(canvas, bx0, by0, bx1, by1, banner_color)
+
+    # Text (3x5 font, centered in banner)
+    font = _FONT_3x5
+    tw = _text_width(text, font)
+    tx = bx0 + (bx1 - bx0 - tw) // 2
+    ty = by0 + (by1 - by0 - 5) // 2
+    _render_text(canvas, text, tx, ty, font, _BANNER_TEXT)
+
     return canvas
 
 
-def _draw_hdf_32(c: dict[str, T]) -> list[list[T]]:
-    """32x32 hard drive."""
+def _draw_page_icon_32(banner_color: T, text: str) -> list[list[T]]:
+    """32x32 pretty-file-icons page icon."""
     canvas = _new_canvas(32)
-    # Body
-    _fill_rect(canvas, 3, 5, 29, 27, c["body"])
-    # Top highlight area (label)
-    _fill_rect(canvas, 3, 5, 29, 10, c["highlight"])
-    # Label line
-    _fill_rect(canvas, 5, 7, 27, 9, c["label"])
-    # Bottom darker edge
-    _fill_rect(canvas, 3, 25, 29, 27, c["dark"])
+    # Page: x=[6,26), y=[2,30) -> 20px wide, 28px tall
+    px0, py0, px1, py1 = 6, 2, 26, 30
+    ear = 4
+
+    # Page fill
+    _fill_rect(canvas, px0, py0, px1 - ear, py1, _PAGE_FILL)
+    _fill_rect(canvas, px0, py0 + ear, px1, py1, _PAGE_FILL)
+
+    # Dog-ear fill
+    for i in range(ear):
+        _fill_rect(canvas, px1 - ear + i + 1, py0 + i, px1, py0 + i + 1, _DOG_EAR_FILL)
+
     # Outline
-    _draw_outline_rect(canvas, 3, 5, 29, 27, c["outline"])
-    # Spindle circle (bottom right area)
-    for dy in range(-2, 3):
-        for dx in range(-2, 3):
-            if dx * dx + dy * dy <= 5:
-                _set_pixel(canvas, 24 + dx, 21 + dy, c["spindle"])
-    # Spindle center highlight
-    _set_pixel(canvas, 24, 21, c["dark"])
+    for y in range(py0, py1):
+        _set_pixel(canvas, px0, y, _PAGE_OUTLINE)
+    for x in range(px0, px1):
+        _set_pixel(canvas, x, py1 - 1, _PAGE_OUTLINE)
+    for y in range(py0 + ear, py1):
+        _set_pixel(canvas, px1 - 1, y, _PAGE_OUTLINE)
+    for x in range(px0, px1 - ear):
+        _set_pixel(canvas, x, py0, _PAGE_OUTLINE)
+    for i in range(ear + 1):
+        _set_pixel(canvas, px1 - ear + i, py0 + i, _PAGE_OUTLINE)
+    for x in range(px1 - ear, px1):
+        _set_pixel(canvas, x, py0 + ear, _PAGE_OUTLINE)
+
+    # Banner: bottom 8 rows
+    bx0, by0, bx1, by1 = px0 + 1, py1 - 9, px1 - 1, py1 - 1
+    _fill_rect(canvas, bx0, by0, bx1, by1, banner_color)
+
+    # Text (4x6 font, centered)
+    font = _FONT_4x6
+    tw = _text_width(text, font)
+    tx = bx0 + (bx1 - bx0 - tw) // 2
+    ty = by0 + (by1 - by0 - 6) // 2
+    _render_text(canvas, text, tx, ty, font, _BANNER_TEXT)
+
     return canvas
 
 
-def _draw_hdf_48(c: dict[str, T]) -> list[list[T]]:
-    """48x48 hard drive."""
+def _draw_page_icon_48(banner_color: T, text: str) -> list[list[T]]:
+    """48x48 pretty-file-icons page icon."""
     canvas = _new_canvas(48)
-    # Body
-    _fill_rect(canvas, 5, 8, 43, 40, c["body"])
-    # Top highlight area
-    _fill_rect(canvas, 5, 8, 43, 16, c["highlight"])
-    # Label area
-    _fill_rect(canvas, 8, 10, 40, 14, c["label"])
-    # Bottom darker edge
-    _fill_rect(canvas, 5, 37, 43, 40, c["dark"])
-    # Side darker edges
-    _fill_rect(canvas, 5, 8, 7, 40, c["dark"])
-    _fill_rect(canvas, 41, 8, 43, 40, c["dark"])
+    # Page: x=[9,39), y=[3,45) -> 30px wide, 42px tall
+    px0, py0, px1, py1 = 9, 3, 39, 45
+    ear = 7
+
+    # Page fill
+    _fill_rect(canvas, px0, py0, px1 - ear, py1, _PAGE_FILL)
+    _fill_rect(canvas, px0, py0 + ear, px1, py1, _PAGE_FILL)
+
+    # Dog-ear fill
+    for i in range(ear):
+        _fill_rect(canvas, px1 - ear + i + 1, py0 + i, px1, py0 + i + 1, _DOG_EAR_FILL)
+
     # Outline
-    _draw_outline_rect(canvas, 5, 8, 43, 40, c["outline"])
-    # Horizontal divider line below label area
-    _fill_rect(canvas, 6, 16, 42, 17, c["outline"])
-    # Spindle circle
-    cx, cy = 36, 31
-    for dy in range(-4, 5):
-        for dx in range(-4, 5):
-            dist = dx * dx + dy * dy
-            if dist <= 16:
-                col = c["spindle"] if dist <= 4 else c["dark"]
-                _set_pixel(canvas, cx + dx, cy + dy, col)
-    # Spindle center
-    _set_pixel(canvas, cx, cy, c["highlight"])
-    # Screw holes in corners
-    for sx, sy in [(8, 37), (39, 37), (8, 10)]:
-        _set_pixel(canvas, sx, sy, c["spindle"])
+    for y in range(py0, py1):
+        _set_pixel(canvas, px0, y, _PAGE_OUTLINE)
+    for x in range(px0, px1):
+        _set_pixel(canvas, x, py1 - 1, _PAGE_OUTLINE)
+    for y in range(py0 + ear, py1):
+        _set_pixel(canvas, px1 - 1, y, _PAGE_OUTLINE)
+    for x in range(px0, px1 - ear):
+        _set_pixel(canvas, x, py0, _PAGE_OUTLINE)
+    for i in range(ear + 1):
+        _set_pixel(canvas, px1 - ear + i, py0 + i, _PAGE_OUTLINE)
+    for x in range(px1 - ear, px1):
+        _set_pixel(canvas, x, py0 + ear, _PAGE_OUTLINE)
+
+    # Banner: bottom 12 rows
+    bx0, by0, bx1, by1 = px0 + 1, py1 - 13, px1 - 1, py1 - 1
+    _fill_rect(canvas, bx0, by0, bx1, by1, banner_color)
+
+    # Text (6x8 font, centered)
+    font = _FONT_6x8
+    tw = _text_width(text, font)
+    tx = bx0 + (bx1 - bx0 - tw) // 2
+    ty = by0 + (by1 - by0 - 8) // 2
+    _render_text(canvas, text, tx, ty, font, _BANNER_TEXT)
+
     return canvas
 
 
-def _draw_adf_16(c: dict[str, T]) -> list[list[T]]:
-    """16x16 floppy disk: square with notch and slider."""
+def _draw_page_icon_256(banner_color: T, text: str, content_color: T | None = None) -> list[list[T]]:
+    """256x256 pretty-file-icons page icon with optional content illustration."""
+    canvas = _new_canvas(256)
+    # Page: x=[43,213), y=[15,240) -> 170px wide, 225px tall
+    px0, py0, px1, py1 = 43, 15, 213, 240
+    ear = 35
+
+    # Rounded-corner page fill
+    _fill_rect(canvas, px0 + 4, py0, px1 - ear, py0 + 4, _PAGE_FILL)  # top strip
+    _fill_rect(canvas, px0, py0 + 4, px1 - ear, py1 - 4, _PAGE_FILL)  # main body left
+    _fill_rect(canvas, px0, py0 + ear, px1, py1 - 4, _PAGE_FILL)      # main body full
+    _fill_rect(canvas, px0 + 4, py1 - 4, px1 - 4, py1, _PAGE_FILL)   # bottom strip
+
+    # Dog-ear fill
+    for i in range(ear):
+        _fill_rect(canvas, px1 - ear + i + 1, py0 + i, px1, py0 + i + 1, _DOG_EAR_FILL)
+
+    # Outline — left
+    for y in range(py0 + 4, py1 - 4):
+        _set_pixel(canvas, px0, y, _PAGE_OUTLINE)
+    # Outline — bottom
+    for x in range(px0 + 4, px1 - 4):
+        _set_pixel(canvas, x, py1 - 1, _PAGE_OUTLINE)
+    # Outline — right (below ear)
+    for y in range(py0 + ear, py1 - 4):
+        _set_pixel(canvas, px1 - 1, y, _PAGE_OUTLINE)
+    # Outline — top (before ear)
+    for x in range(px0 + 4, px1 - ear):
+        _set_pixel(canvas, x, py0, _PAGE_OUTLINE)
+    # Dog-ear diagonal
+    for i in range(ear + 1):
+        _set_pixel(canvas, px1 - ear + i, py0 + i, _PAGE_OUTLINE)
+    # Dog-ear horizontal crease
+    for x in range(px1 - ear, px1):
+        _set_pixel(canvas, x, py0 + ear, _PAGE_OUTLINE)
+    # Rounded corners (small arcs)
+    for dx, dy in [(1,3),(2,2),(3,1)]:
+        _set_pixel(canvas, px0 + dx, py0 + dy, _PAGE_OUTLINE)   # top-left
+        _set_pixel(canvas, px0 + dx, py1 - 1 - dy, _PAGE_OUTLINE)  # bottom-left
+        _set_pixel(canvas, px1 - 1 - dx, py1 - 1 - dy, _PAGE_OUTLINE)  # bottom-right
+
+    # Content illustration lines (above banner, in lighter banner color)
+    if content_color:
+        for ly in range(py0 + 55, py0 + 130, 16):
+            _fill_rect(canvas, px0 + 25, ly, px1 - 30, ly + 3, content_color)
+
+    # Banner: bottom 65 rows
+    bx0, by0, bx1, by1 = px0 + 1, py1 - 66, px1 - 1, py1 - 1
+    _fill_rect(canvas, bx0, by0, bx1, by1, banner_color)
+
+    # Text — scale up the 6x8 font by 4x for crisp large rendering
+    font = _FONT_6x8
+    scale = 4
+    tw = _text_width(text, font, spacing=1) * scale
+    tx = bx0 + (bx1 - bx0 - tw) // 2
+    ty = by0 + (by1 - by0 - 8 * scale) // 2
+    for i, ch in enumerate(text):
+        glyph = font.get(ch)
+        if glyph is None:
+            continue
+        for row_i, row in enumerate(glyph):
+            for col_i, bit in enumerate(row):
+                if bit:
+                    _fill_rect(canvas, tx + col_i * scale, ty + row_i * scale,
+                               tx + col_i * scale + scale, ty + row_i * scale + scale,
+                               _BANNER_TEXT)
+        tx += (len(glyph[0]) + 1) * scale
+
+    return canvas
+
+
+# ---------------------------------------------------------------------------
+# Tray icon — amber eject symbol (triangle + bar)
+# ---------------------------------------------------------------------------
+
+
+def _draw_tray_16() -> list[list[T]]:
+    """16x16 tray icon: 'AF' text in a rounded box."""
     canvas = _new_canvas(16)
-    # Body
-    _fill_rect(canvas, 2, 2, 14, 14, c["body"])
-    # Top-right notch (write-protect area)
-    _fill_rect(canvas, 12, 2, 14, 5, c["clear"])
-    # Outline
-    for x in range(2, 14):
-        _set_pixel(canvas, x, 2, c["outline"])
-        _set_pixel(canvas, x, 13, c["outline"])
-    for y in range(2, 14):
-        _set_pixel(canvas, 2, y, c["outline"])
-        _set_pixel(canvas, 13, y, c["outline"])
-    # Notch outline
-    _set_pixel(canvas, 11, 2, c["outline"])
-    _set_pixel(canvas, 11, 3, c["outline"])
-    _set_pixel(canvas, 11, 4, c["outline"])
-    _set_pixel(canvas, 12, 4, c["outline"])
-    _set_pixel(canvas, 13, 4, c["outline"])
-    # Clear the notch interior outline edge
-    _fill_rect(canvas, 12, 2, 14, 4, c["clear"])
-    # Metal slider at top
-    _fill_rect(canvas, 5, 2, 10, 5, c["slider"])
-    # Label area
-    _fill_rect(canvas, 4, 8, 12, 13, c["label"])
-    _draw_outline_rect(canvas, 4, 8, 12, 13, c["dark"])
+    bg = (245, 245, 245, 255)
+    outline = (60, 60, 60, 220)
+    text_color = (180, 130, 10, 255)
+
+    # Fill entire canvas with background
+    _fill_rect(canvas, 0, 0, 16, 16, bg)
+
+    # Clip 4 corner pixels (1px rounded corners)
+    transparent = (0, 0, 0, 0)
+    for cx, cy in [(0, 0), (15, 0), (0, 15), (15, 15)]:
+        canvas[cy][cx] = transparent
+
+    # 1px outline
+    _draw_outline_rect(canvas, 0, 0, 16, 16, outline)
+    # Re-clear corners over outline
+    for cx, cy in [(0, 0), (15, 0), (0, 15), (15, 15)]:
+        canvas[cy][cx] = transparent
+
+    # Bold "A" glyph 6x10 (2px strokes)
+    _A_6x10 = [
+        [0,0,1,1,0,0],
+        [0,1,1,1,1,0],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,1,1,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+    ]
+    # Bold "F" glyph 6x10 (2px strokes)
+    _F_6x10 = [
+        [1,1,1,1,1,1],
+        [1,1,1,1,1,1],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,1,1,1,0],
+        [1,1,1,1,1,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+    ]
+
+    # Position: 13px wide (6+1+6), centered in 14px interior (1px border)
+    # x_start = 1 + (14 - 13) // 2 = 1, y_start = 1 + (14 - 10) // 2 = 3
+    x0, y0 = 1, 3
+    for row_i, row in enumerate(_A_6x10):
+        for col_i, bit in enumerate(row):
+            if bit:
+                _set_pixel(canvas, x0 + col_i, y0 + row_i, text_color)
+    x_f = x0 + 6 + 1  # 1px spacing
+    for row_i, row in enumerate(_F_6x10):
+        for col_i, bit in enumerate(row):
+            if bit:
+                _set_pixel(canvas, x_f + col_i, y0 + row_i, text_color)
+
     return canvas
 
 
-def _draw_adf_32(c: dict[str, T]) -> list[list[T]]:
-    """32x32 floppy disk."""
+def _draw_tray_32() -> list[list[T]]:
+    """32x32 tray icon: 'AF' text in a rounded box."""
     canvas = _new_canvas(32)
-    # Body
-    _fill_rect(canvas, 4, 3, 28, 29, c["body"])
-    # Top-right notch
-    _fill_rect(canvas, 24, 3, 28, 8, c["clear"])
-    # Outline
-    _draw_outline_rect(canvas, 4, 3, 28, 29, c["outline"])
-    # Notch outline
-    for y in range(3, 8):
-        _set_pixel(canvas, 23, y, c["outline"])
-    for x in range(23, 28):
-        _set_pixel(canvas, x, 8, c["outline"])
-    # Clear notch area (overwrite outline in notch)
-    _fill_rect(canvas, 24, 3, 28, 8, c["clear"])
-    # Metal slider
-    _fill_rect(canvas, 10, 3, 22, 9, c["slider"])
-    _draw_outline_rect(canvas, 10, 3, 22, 9, c["slider_dark"])
-    # Slider opening
-    _fill_rect(canvas, 14, 4, 18, 8, c["dark"])
-    # Label area
-    _fill_rect(canvas, 7, 16, 25, 27, c["label"])
-    _draw_outline_rect(canvas, 7, 16, 25, 27, c["dark"])
-    # Label lines
-    for ly in (19, 21, 23):
-        _fill_rect(canvas, 9, ly, 23, ly + 1, c["label_line"])
+    bg = (245, 245, 245, 255)
+    outline = (60, 60, 60, 220)
+    text_color = (180, 130, 10, 255)
+
+    # Fill entire canvas with background
+    _fill_rect(canvas, 0, 0, 32, 32, bg)
+
+    # Clip 2px rounded corners
+    transparent = (0, 0, 0, 0)
+    corners = [(0, 0), (1, 0), (0, 1),
+               (30, 0), (31, 0), (31, 1),
+               (0, 30), (0, 31), (1, 31),
+               (30, 31), (31, 31), (31, 30)]
+    for cx, cy in corners:
+        canvas[cy][cx] = transparent
+
+    # 1px outline
+    _draw_outline_rect(canvas, 0, 0, 32, 32, outline)
+    # Re-clear corners over outline
+    for cx, cy in corners:
+        canvas[cy][cx] = transparent
+
+    # Scale 6x10 glyphs by 2x -> 12x20 per letter, 2px spacing = 26px wide
+    # Centered in 30px interior: (30-26)//2 = 2, so x_start = 1 + 2 = 3
+    # Vertically: (30-20)//2 = 5, so y_start = 1 + 5 = 6
+    _A_6x10 = [
+        [0,0,1,1,0,0],
+        [0,1,1,1,1,0],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,1,1,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+        [1,1,0,0,1,1],
+    ]
+    _F_6x10 = [
+        [1,1,1,1,1,1],
+        [1,1,1,1,1,1],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,1,1,1,0],
+        [1,1,1,1,1,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+        [1,1,0,0,0,0],
+    ]
+
+    scale = 2
+    x0, y0 = 3, 6
+    for glyph, gx in [(_A_6x10, x0), (_F_6x10, x0 + 12 + 2)]:
+        for row_i, row in enumerate(glyph):
+            for col_i, bit in enumerate(row):
+                if bit:
+                    _fill_rect(canvas, gx + col_i * scale, y0 + row_i * scale,
+                               gx + col_i * scale + scale, y0 + row_i * scale + scale,
+                               text_color)
+
     return canvas
-
-
-def _draw_adf_48(c: dict[str, T]) -> list[list[T]]:
-    """48x48 floppy disk."""
-    canvas = _new_canvas(48)
-    # Body
-    _fill_rect(canvas, 6, 4, 42, 44, c["body"])
-    # Top-right notch
-    _fill_rect(canvas, 36, 4, 42, 12, c["clear"])
-    # Outline
-    _draw_outline_rect(canvas, 6, 4, 42, 44, c["outline"])
-    # Notch outline
-    for y in range(4, 12):
-        _set_pixel(canvas, 35, y, c["outline"])
-    for x in range(35, 42):
-        _set_pixel(canvas, x, 12, c["outline"])
-    _fill_rect(canvas, 36, 4, 42, 12, c["clear"])
-    # Side bevels
-    _fill_rect(canvas, 6, 4, 8, 44, c["dark"])
-    _fill_rect(canvas, 40, 4, 42, 44, c["dark"])
-    # Metal slider
-    _fill_rect(canvas, 14, 4, 34, 14, c["slider"])
-    _draw_outline_rect(canvas, 14, 4, 34, 14, c["slider_dark"])
-    # Slider opening
-    _fill_rect(canvas, 20, 5, 28, 13, c["dark"])
-    # Circular hub area at bottom center
-    cx, cy = 24, 38
-    for dy in range(-3, 4):
-        for dx in range(-3, 4):
-            if dx * dx + dy * dy <= 9:
-                _set_pixel(canvas, cx + dx, cy + dy, c["dark"])
-    # Label area
-    _fill_rect(canvas, 10, 22, 38, 40, c["label"])
-    _draw_outline_rect(canvas, 10, 22, 38, 40, c["dark"])
-    # Label lines
-    for ly in (26, 29, 32, 35):
-        _fill_rect(canvas, 13, ly, 35, ly + 1, c["label_line"])
-    return canvas
-
-
-def _scale_canvas(canvas: list[list[T]], target: int) -> list[list[T]]:
-    """Scale a canvas to target size using nearest-neighbor."""
-    src_size = len(canvas)
-    result = _new_canvas(target)
-    for y in range(target):
-        sy = y * src_size // target
-        for x in range(target):
-            sx = x * src_size // target
-            result[y][x] = canvas[sy][sx]
-    return result
 
 
 def _canvas_to_bgra(canvas: list[list[T]]) -> bytes:
@@ -638,31 +846,39 @@ def _make_bmp_entry(canvas: list[list[T]]) -> bytes:
 
 
 def _make_ico(icon_type: str) -> bytes:
-    """Generate a multi-resolution ICO file for the given type ('hdf' or 'adf')."""
+    """Generate a multi-resolution ICO file for the given type."""
     if icon_type == "hdf":
-        c = _HDF_COLORS
-        draw_16 = _draw_hdf_16
-        draw_32 = _draw_hdf_32
-        draw_48 = _draw_hdf_48
+        banner, text = _HDF_BANNER, "HDF"
+        content_color = (232, 195, 90, 80)  # light amber, semi-transparent
+        canvases = {
+            16: _draw_page_icon_16(banner, text),
+            32: _draw_page_icon_32(banner, text),
+            48: _draw_page_icon_48(banner, text),
+            256: _draw_page_icon_256(banner, text, content_color),
+        }
+    elif icon_type == "adf":
+        banner, text = _ADF_BANNER, "ADF"
+        content_color = (100, 200, 150, 80)  # light green, semi-transparent
+        canvases = {
+            16: _draw_page_icon_16(banner, text),
+            32: _draw_page_icon_32(banner, text),
+            48: _draw_page_icon_48(banner, text),
+            256: _draw_page_icon_256(banner, text, content_color),
+        }
+    elif icon_type == "tray":
+        canvases = {
+            16: _draw_tray_16(),
+            32: _draw_tray_32(),
+        }
     else:
-        c = _ADF_COLORS
-        draw_16 = _draw_adf_16
-        draw_32 = _draw_adf_32
-        draw_48 = _draw_adf_48
-
-    canvases = {
-        16: draw_16(c),
-        32: draw_32(c),
-        48: draw_48(c),
-    }
-    # 256x256: scale up from 48x48
-    canvases[256] = _scale_canvas(canvases[48], 256)
+        raise ValueError(f"Unknown icon type: {icon_type}")
 
     entries: list[tuple[int, bytes]] = []
-    for size in (16, 32, 48):
-        entries.append((size, _make_bmp_entry(canvases[size])))
-    # 256x256 as PNG
-    entries.append((256, _make_png(canvases[256])))
+    for size in sorted(canvases):
+        if size == 256:
+            entries.append((size, _make_png(canvases[size])))
+        else:
+            entries.append((size, _make_bmp_entry(canvases[size])))
 
     header = struct.pack("<HHH", 0, 1, len(entries))
     offset = 6 + 16 * len(entries)
@@ -685,6 +901,7 @@ def _make_ico(icon_type: str) -> bytes:
 _ICON_SPECS = {
     "diskimage.ico": "hdf",
     "floppyimage.ico": "adf",
+    "tray.ico": "tray",
 }
 
 

@@ -1039,3 +1039,126 @@ class TestWmicCreationFlags:
 
         _find_amifuse_mounts_windows()
         assert captured_kwargs.get("creationflags") == _CREATE_NO_WINDOW
+
+
+# ---------------------------------------------------------------------------
+# R. Driver resolution -- 7 tests
+# ---------------------------------------------------------------------------
+
+
+class TestDriverResolution:
+    """Tests for get_driver_search_dirs, find_driver_for_dostype, get_primary_driver_dir."""
+
+    def test_get_driver_search_dirs_includes_bundled(self):
+        """Bundled amifuse/drivers/ is in search dirs."""
+        from amifuse.platform import get_driver_search_dirs
+        dirs = get_driver_search_dirs()
+        bundled = Path(__file__).parent.parent.parent / "amifuse" / "drivers"
+        # The bundled dir is included only if it exists on disk
+        if bundled.is_dir():
+            assert bundled.resolve() in [d.resolve() for d in dirs]
+
+    def test_get_driver_search_dirs_bundled_is_first(self):
+        """Bundled directory is first in search order when it exists."""
+        from amifuse.platform import get_driver_search_dirs
+        dirs = get_driver_search_dirs()
+        if dirs:
+            # First entry should be the bundled drivers dir
+            bundled = Path(__file__).parent.parent.parent / "amifuse" / "drivers"
+            if bundled.is_dir():
+                assert dirs[0].resolve() == bundled.resolve()
+
+    def test_find_driver_for_dostype_dos0(self, tmp_path, monkeypatch):
+        """DOS0 resolves to FastFileSystem."""
+        # Create a temp dir with FastFileSystem
+        driver_file = tmp_path / "FastFileSystem"
+        driver_file.write_bytes(b"\x00")
+        monkeypatch.setattr(
+            "amifuse.platform.get_driver_search_dirs",
+            lambda: [tmp_path],
+        )
+        from amifuse.platform import find_driver_for_dostype
+        result = find_driver_for_dostype("DOS0")
+        assert result == driver_file
+
+    def test_find_driver_for_dostype_unknown(self):
+        """Unknown DOS type returns None."""
+        from amifuse.platform import find_driver_for_dostype
+        result = find_driver_for_dostype("ZZZZ")
+        assert result is None
+
+    def test_find_driver_for_dostype_not_found(self, monkeypatch):
+        """Returns None when driver file doesn't exist in any search dir."""
+        monkeypatch.setattr(
+            "amifuse.platform.get_driver_search_dirs",
+            lambda: [],
+        )
+        from amifuse.platform import find_driver_for_dostype
+        result = find_driver_for_dostype("DOS0")
+        assert result is None
+
+    def test_get_primary_driver_dir_windows(self, monkeypatch):
+        """On Windows, returns LOCALAPPDATA path."""
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\test\AppData\Local")
+        from amifuse.platform import get_primary_driver_dir
+        result = get_primary_driver_dir()
+        assert result == Path(r"C:\Users\test\AppData\Local") / "amifuse" / "drivers"
+
+    def test_get_primary_driver_dir_unix(self, monkeypatch):
+        """On Unix, returns ~/.local/share path."""
+        monkeypatch.setattr("sys.platform", "linux")
+        from amifuse.platform import get_primary_driver_dir
+        result = get_primary_driver_dir()
+        assert result == Path.home() / ".local" / "share" / "amifuse" / "drivers"
+
+
+# ---------------------------------------------------------------------------
+# S. Dedup-before-enrich ordering -- 1 test
+# ---------------------------------------------------------------------------
+
+
+class TestDedupBeforeEnrich:
+    """Verify dedup runs before enrichment to prevent drive letter misassignment."""
+
+    def test_find_mounts_dedup_runs_before_enrich(self, monkeypatch):
+        """Dedup must run before enrichment to prevent drive letter misassignment."""
+        from unittest.mock import MagicMock, call
+
+        call_order = []
+
+        # Parent and child mount pair
+        raw_mounts = [
+            {"pid": 100, "parent_pid": 1, "mountpoint": None, "image": "test.hdf"},
+            {"pid": 200, "parent_pid": 100, "mountpoint": None, "image": "test.hdf"},
+        ]
+
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(
+            "amifuse.platform._find_amifuse_mounts_windows",
+            lambda: list(raw_mounts),
+        )
+
+        original_dedup = None
+        original_enrich = None
+
+        import amifuse.platform as plat
+        original_dedup = plat._deduplicate_fusepy_children
+        original_enrich = plat._enrich_null_mountpoints
+
+        def tracking_dedup(mounts):
+            call_order.append("dedup")
+            return original_dedup(mounts)
+
+        def tracking_enrich(mounts):
+            call_order.append("enrich")
+            # Don't actually scan drives
+
+        monkeypatch.setattr(plat, "_deduplicate_fusepy_children", tracking_dedup)
+        monkeypatch.setattr(plat, "_enrich_null_mountpoints", tracking_enrich)
+
+        result = plat.find_amifuse_mounts()
+        assert call_order == ["dedup", "enrich"]
+        # Child should be filtered out by dedup
+        assert len(result) == 1
+        assert result[0]["pid"] == 100

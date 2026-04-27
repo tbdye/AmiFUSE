@@ -151,3 +151,35 @@ class TestMainExits:
         from amifuse.launcher import main
         main(["inspect", "test.hdf"])
         mock_exit.assert_called_once_with(0)
+
+
+class TestMountUsesPythonw:
+    def test_mount_uses_pythonw(self, mock_popen, mock_windll, mock_exit, monkeypatch):
+        """Mount subprocess uses pythonw.exe."""
+        mock_windll.kernel32.OpenMutexW.return_value = 1
+        monkeypatch.setattr("sys.executable", r"C:\Python\python.exe")
+        monkeypatch.setattr(
+            "amifuse.launcher.os.path.isfile",
+            lambda p: p == r"C:\Python\pythonw.exe",
+        )
+
+        from amifuse.launcher import main
+        main(["mount", "test.hdf"])
+
+        cmd = mock_popen.call_args_list[0][0][0]
+        assert cmd[0] == r"C:\Python\pythonw.exe"
+
+
+class TestLauncherUsesFileLogging:
+    def test_launcher_uses_file_logging(self, mock_popen, mock_windll, mock_exit, tmp_path, monkeypatch):
+        """Logging writes via open/write/close, not logging module."""
+        mock_windll.kernel32.OpenMutexW.return_value = 1
+        monkeypatch.setattr("amifuse.launcher._LOG_DIR", tmp_path)
+
+        from amifuse.launcher import _log
+        _log("test message")
+
+        log_file = tmp_path / "launcher.log"
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "test message" in content

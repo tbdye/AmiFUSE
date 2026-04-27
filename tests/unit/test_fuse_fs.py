@@ -1342,9 +1342,23 @@ class TestCreateBridgeFromArgs:
         image = tmp_path / "test.adf"
         image.write_bytes(b"\x00" * 1024)
 
+        fake_adf_info = MagicMock()
+        fake_adf_info.dos_type = 0x444F5300  # DOS0
         fake_rdb = MagicMock()
-        fake_rdb.detect_adf.return_value = MagicMock()
+        fake_rdb.detect_adf.return_value = fake_adf_info
         monkeypatch.setitem(sys.modules, "amifuse.rdb_inspect", fake_rdb)
+
+        # Mock DosType so the lazy import inside _create_bridge_from_args works
+        fake_dostype = MagicMock()
+        fake_dostype.num_to_tag_str.return_value = "DOS0"
+        monkeypatch.setitem(sys.modules, "amitools", MagicMock())
+        monkeypatch.setitem(sys.modules, "amitools.fs", MagicMock())
+        monkeypatch.setitem(sys.modules, "amitools.fs.DosType", fake_dostype)
+
+        # Ensure no driver is found on disk
+        monkeypatch.setattr(
+            "amifuse.platform.find_driver_for_dostype", lambda dt: None,
+        )
 
         args = argparse.Namespace(
             image=image,
@@ -3608,3 +3622,109 @@ class TestCreateBridgeReadOnlyParam:
         )
         fuse_fs_mod._create_bridge_from_args(args, "test", read_only=False)
         assert captured.get("read_only") is False
+
+
+# ---------------------------------------------------------------------------
+# ADF driver auto-resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdfDriverAutoResolution:
+    """Tests for ADF auto-resolution of driver via find_driver_for_dostype."""
+
+    def test_adf_auto_resolves_driver(self, monkeypatch, tmp_path):
+        """mount_fuse auto-resolves driver for ADF via find_driver_for_dostype."""
+        import types
+        import amifuse.fuse_fs as fuse_fs_mod
+
+        image = tmp_path / "test.adf"
+        image.write_bytes(b"\x00" * 1024)
+
+        driver_file = tmp_path / "FastFileSystem"
+        driver_file.write_bytes(b"\x00")
+
+        fake_adf_info = MagicMock()
+        fake_adf_info.dos_type = 0x444F5300  # DOS0
+        fake_rdb = MagicMock()
+        fake_rdb.detect_adf.return_value = fake_adf_info
+        monkeypatch.setitem(sys.modules, "amifuse.rdb_inspect", fake_rdb)
+
+        # Mock DosType with proper module hierarchy
+        fake_dostype = types.ModuleType("amitools.fs.DosType")
+        fake_dostype.num_to_tag_str = lambda dt: "DOS0"
+        fake_amitools = types.ModuleType("amitools")
+        fake_amitools_fs = types.ModuleType("amitools.fs")
+        fake_amitools.fs = fake_amitools_fs
+        fake_amitools_fs.DosType = fake_dostype
+        monkeypatch.setitem(sys.modules, "amitools", fake_amitools)
+        monkeypatch.setitem(sys.modules, "amitools.fs", fake_amitools_fs)
+        monkeypatch.setitem(sys.modules, "amitools.fs.DosType", fake_dostype)
+
+        # find_driver_for_dostype returns the driver
+        monkeypatch.setattr(
+            "amifuse.platform.find_driver_for_dostype",
+            lambda dt: driver_file,
+        )
+
+        # Mock HandlerBridge to capture the driver arg
+        captured = {}
+        mock_bridge = MagicMock()
+
+        def fake_bridge(*args, **kwargs):
+            captured["args"] = args
+            return mock_bridge
+
+        monkeypatch.setattr(fuse_fs_mod, "HandlerBridge", fake_bridge)
+
+        args = argparse.Namespace(
+            image=image,
+            json=False,
+            partition=None,
+            driver=None,
+            block_size=None,
+            debug=False,
+        )
+        bridge, info = fuse_fs_mod._create_bridge_from_args(args, "test")
+        # The auto-resolved driver path should be the second positional arg
+        assert captured["args"][1] == str(driver_file)
+
+    def test_adf_no_driver_found_error(self, monkeypatch, tmp_path):
+        """mount_fuse raises SystemExit when no driver found for ADF."""
+        import types
+        import amifuse.fuse_fs as fuse_fs_mod
+
+        image = tmp_path / "test.adf"
+        image.write_bytes(b"\x00" * 1024)
+
+        fake_adf_info = MagicMock()
+        fake_adf_info.dos_type = 0x444F5300
+        fake_rdb = MagicMock()
+        fake_rdb.detect_adf.return_value = fake_adf_info
+        monkeypatch.setitem(sys.modules, "amifuse.rdb_inspect", fake_rdb)
+
+        fake_dostype = types.ModuleType("amitools.fs.DosType")
+        fake_dostype.num_to_tag_str = lambda dt: "DOS0"
+        fake_amitools = types.ModuleType("amitools")
+        fake_amitools_fs = types.ModuleType("amitools.fs")
+        fake_amitools.fs = fake_amitools_fs
+        fake_amitools_fs.DosType = fake_dostype
+        monkeypatch.setitem(sys.modules, "amitools", fake_amitools)
+        monkeypatch.setitem(sys.modules, "amitools.fs", fake_amitools_fs)
+        monkeypatch.setitem(sys.modules, "amitools.fs.DosType", fake_dostype)
+
+        monkeypatch.setattr(
+            "amifuse.platform.find_driver_for_dostype", lambda dt: None,
+        )
+
+        args = argparse.Namespace(
+            image=image,
+            json=False,
+            partition=None,
+            driver=None,
+            block_size=None,
+            debug=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            fuse_fs_mod._create_bridge_from_args(args, "test")
+        assert "DOS0" in str(exc_info.value)
+        assert "FastFileSystem" in str(exc_info.value)

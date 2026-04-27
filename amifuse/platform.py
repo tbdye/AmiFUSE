@@ -2,7 +2,8 @@
 Platform abstraction layer for amifuse.
 
 This module provides platform-specific functionality with a unified interface,
-including mount options, default mountpoints, unmount commands, and icon handling.
+including mount options, default mountpoints, unmount commands, icon handling,
+and driver resolution.
 
 Platform-specific implementations:
 - macOS/Darwin: icon_darwin.py
@@ -33,6 +34,83 @@ _CREATE_NO_WINDOW = 0x08000000
 # _kill_mount_owner_processes() can still compile and will use the strongest
 # signal available.
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------
+# Driver resolution
+# ---------------------------------------------------------------------------
+
+# DOS type tag string to handler binary name mapping.
+# DOS0-DOS7 are all handled by FastFileSystem (OFS = DOS0, FFS = DOS1, etc.)
+_DOSTYPE_DRIVER_MAP = {
+    "DOS0": "FastFileSystem",
+    "DOS1": "FastFileSystem",
+    "DOS2": "FastFileSystem",
+    "DOS3": "FastFileSystem",
+    "DOS4": "FastFileSystem",
+    "DOS5": "FastFileSystem",
+    "DOS6": "FastFileSystem",
+    "DOS7": "FastFileSystem",
+}
+
+
+def get_driver_search_dirs() -> List[Path]:
+    """Return list of directories to search for handler binaries.
+
+    Search order:
+    1. Bundled with package (always available after pip install)
+    2. User-installed overrides (platform-specific data directories)
+    3. Dev fallback: AmiFUSE-testing sibling repo
+    """
+    dirs: List[Path] = []
+
+    # 1. Bundled with package (always available)
+    bundled = Path(__file__).parent / "drivers"
+    if bundled.is_dir():
+        dirs.append(bundled)
+
+    # 2. User-installed overrides
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            dirs.append(Path(local) / "amifuse" / "drivers")
+    else:
+        dirs.append(Path.home() / ".local" / "share" / "amifuse" / "drivers")
+
+    # 3. Dev fallback: AmiFUSE-testing sibling
+    testing_drivers = Path(__file__).parent.parent.parent / "AmiFUSE-testing" / "drivers"
+    if testing_drivers.is_dir():
+        dirs.append(testing_drivers)
+
+    return dirs
+
+
+def find_driver_for_dostype(dos_type_str: str) -> Optional[Path]:
+    """Find a driver binary for the given DOS type tag string (e.g. "DOS0").
+
+    Args:
+        dos_type_str: DOS type as a 4-char tag string (e.g. "DOS0", "DOS1").
+
+    Returns:
+        Path to the driver binary, or None if not found.
+    """
+    driver_name = _DOSTYPE_DRIVER_MAP.get(dos_type_str)
+    if not driver_name:
+        return None
+    for search_dir in get_driver_search_dirs():
+        candidate = search_dir / driver_name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def get_primary_driver_dir() -> Path:
+    """Return the primary (preferred) directory for installing drivers."""
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            return Path(local) / "amifuse" / "drivers"
+    return Path.home() / ".local" / "share" / "amifuse" / "drivers"
 
 
 def get_default_mountpoint(volname: str) -> Optional[Path]:
@@ -430,8 +508,9 @@ def find_amifuse_mounts():
     else:
         mounts = _find_amifuse_mounts_unix()
 
+    mounts = _deduplicate_fusepy_children(mounts)
     _enrich_null_mountpoints(mounts)
-    return _deduplicate_fusepy_children(mounts)
+    return mounts
 
 
 def _parse_mount_tokens(tokens):

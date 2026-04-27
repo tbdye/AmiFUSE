@@ -107,7 +107,31 @@ def run_checks() -> List[CheckResult]:
             fixable=False, fix_description=fix_desc,
         ))
 
-    # 6. Shell registration (Windows only)
+    # 6. Driver availability
+    from . import platform as plat
+    driver_found = False
+    driver_path = None
+    for search_dir in plat.get_driver_search_dirs():
+        candidate = search_dir / "FastFileSystem"
+        if candidate.is_file():
+            driver_found = True
+            driver_path = candidate
+            break
+
+    if driver_found:
+        results.append(CheckResult(
+            "drivers", "ok", f"FastFileSystem found at {driver_path}",
+        ))
+    else:
+        primary_dir = plat.get_primary_driver_dir()
+        results.append(CheckResult(
+            "drivers", "warning",
+            "FastFileSystem not found",
+            fixable=False,
+            fix_description=f"Copy FastFileSystem to {primary_dir} for ADF floppy mounting",
+        ))
+
+    # 7. Shell registration (Windows only)
     if sys.platform.startswith("win"):
         try:
             from .windows_shell import is_registered, register
@@ -125,7 +149,7 @@ def run_checks() -> List[CheckResult]:
         except ImportError:
             pass  # windows_shell not available, skip check
 
-    # 7. PATH check
+    # 8. PATH check
     if shutil.which("amifuse"):
         results.append(CheckResult("path", "ok", "amifuse is on PATH"))
     else:

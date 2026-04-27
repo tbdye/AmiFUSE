@@ -481,3 +481,65 @@ class TestWakeEvent:
 
         assert len(wait_calls) >= 1
         assert wait_calls[0] == tray_app.POLL_INTERVAL
+
+
+# ---------------------------------------------------------------------------
+# Tray icon and inspect tests
+# ---------------------------------------------------------------------------
+
+
+class TestTrayIconPath:
+    def test_tray_icon_path_is_tray_ico(self, tray_app, fake_pystray, fake_pil, monkeypatch):
+        """TrayApp loads tray.ico not diskimage.ico."""
+        opened_paths = []
+        original_open = fake_pil.open
+
+        def tracking_open(path):
+            opened_paths.append(path)
+            return original_open(path)
+
+        fake_pil.open = tracking_open
+        monkeypatch.setenv("APPDATA", "/fake/appdata")
+
+        tray_app.run()
+        assert len(opened_paths) >= 1
+        assert opened_paths[0].endswith("tray.ico")
+        assert "diskimage" not in opened_paths[0]
+
+
+class TestMountLabel:
+    def test_mount_label_uses_image_key(self, tray_app, fake_pystray):
+        """Menu label uses mount['image'] for display."""
+        tray_app._mounts = [
+            {"pid": 1, "mountpoint": "D:", "image": "/path/to/game.hdf"},
+        ]
+        menu = tray_app._build_menu()
+        labels = [i.text for i in menu.items if hasattr(i, "text") and i.text]
+        mount_label = labels[0]
+        assert "game.hdf" in mount_label
+
+
+class TestInspectUsesPythonExe:
+    def test_inspect_uses_python_exe(self, tray_app, fake_pystray, monkeypatch):
+        """Inspect resolves python.exe not pythonw.exe/sys.executable."""
+        monkeypatch.setattr(
+            "sys.executable", r"C:\Python\pythonw.exe",
+        )
+        monkeypatch.setattr(
+            "amifuse.tray.os.path.isfile",
+            lambda p: p == r"C:\Python\python.exe",
+        )
+
+        popen_calls = []
+        monkeypatch.setattr(
+            "amifuse.tray.subprocess.Popen",
+            lambda cmd, **kw: popen_calls.append(cmd),
+        )
+
+        mount = {"image": "/path/to/test.hdf", "mountpoint": "D:"}
+        tray_app._inspect(mount)
+
+        assert len(popen_calls) == 1
+        cmd = popen_calls[0]
+        # The inner command should use python.exe, not pythonw.exe
+        assert r"C:\Python\python.exe" in cmd

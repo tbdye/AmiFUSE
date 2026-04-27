@@ -2412,14 +2412,20 @@ def mount_fuse(
         floppy_type = "HD" if adf_info.is_hd else "DD"
         part_name = "DF0"  # Will use actual volume name from handler later
 
-        # ADF files don't have embedded drivers - user must specify one
+        # ADF files don't have embedded drivers - try auto-resolution
         if driver is None:
-            raise SystemExit(
-                f"ADF floppy image detected ({floppy_type}, {dt_str}).\n"
-                "Floppy images don't contain embedded filesystem drivers.\n"
-                "You need to specify a filesystem handler with --driver\n"
-                "For FFS/OFS floppies, use the L:FastFileSystem from a Workbench disk."
-            )
+            resolved = plat.find_driver_for_dostype(dt_str)
+            if resolved:
+                driver = str(resolved)
+            else:
+                primary_dir = plat.get_primary_driver_dir()
+                raise SystemExit(
+                    f"ADF floppy image detected ({floppy_type}, {dt_str}).\n"
+                    "Floppy images don't contain embedded filesystem drivers.\n"
+                    f"No driver found for DOS type {dt_str}.\n"
+                    f"Place FastFileSystem in {primary_dir}\n"
+                    "or specify a filesystem handler with --driver"
+                )
         driver_desc = str(driver)
         temp_driver = None
     else:
@@ -2808,7 +2814,9 @@ def _create_bridge_from_args(args, command: str, read_only: bool = True):
         SystemExit on error (with JSON error if args.json is True).
     """
     import json as _json
+    import amitools.fs.DosType as DosType
     from .rdb_inspect import detect_adf, detect_iso
+    from . import platform as plat
 
     use_json = getattr(args, "json", False)
     image = args.image
@@ -2832,12 +2840,21 @@ def _create_bridge_from_args(args, command: str, read_only: bool = True):
 
     if adf_info is not None:
         if driver is None:
-            msg = ("ADF floppy image detected. Floppy images don't contain "
-                   "embedded filesystem drivers. Use --driver to specify one.")
-            if use_json:
-                print(_json.dumps(_json_error(command, "DRIVER_NOT_FOUND", msg)))
-                sys.exit(1)
-            raise SystemExit(msg)
+            dt_str = DosType.num_to_tag_str(adf_info.dos_type)
+            resolved = plat.find_driver_for_dostype(dt_str)
+            if resolved:
+                driver = str(resolved)
+            else:
+                primary_dir = plat.get_primary_driver_dir()
+                msg = (f"ADF floppy image detected ({dt_str}). "
+                       "Floppy images don't contain embedded filesystem drivers. "
+                       f"No driver found for DOS type {dt_str}. "
+                       f"Place FastFileSystem in {primary_dir} "
+                       "or use --driver to specify one.")
+                if use_json:
+                    print(_json.dumps(_json_error(command, "DRIVER_NOT_FOUND", msg)))
+                    sys.exit(1)
+                raise SystemExit(msg)
     else:
         iso_info = detect_iso(image)
         if iso_info is not None:

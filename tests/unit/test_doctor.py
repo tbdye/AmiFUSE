@@ -657,3 +657,45 @@ class TestPlatformSpecificChecks:
         results = _run_with_patches(patches)
         c = _find_check(results, "machine68k")
         assert c.fix_description == "pip install machine68k"
+
+
+# ---------------------------------------------------------------------------
+# K. Drivers check -- 2 tests
+# ---------------------------------------------------------------------------
+
+
+class TestDriversCheck:
+    """Tests for the drivers availability check in run_checks()."""
+
+    def test_drivers_found(self, monkeypatch, tmp_path):
+        """Drivers check reports ok when FastFileSystem found."""
+        driver_dir = tmp_path / "drivers"
+        driver_dir.mkdir()
+        (driver_dir / "FastFileSystem").write_bytes(b"\x00")
+
+        monkeypatch.setattr(
+            "amifuse.platform.get_driver_search_dirs",
+            lambda: [driver_dir],
+        )
+
+        patches = _patch_all_checks()
+        results = _run_with_patches(patches)
+        c = _find_check(results, "drivers")
+        assert c.status == "ok"
+        assert "FastFileSystem" in c.message
+
+    def test_drivers_not_found(self, monkeypatch, tmp_path):
+        """Drivers check reports warning when no drivers found."""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+
+        monkeypatch.setattr(
+            "amifuse.platform.get_driver_search_dirs",
+            lambda: [empty_dir],
+        )
+
+        patches = _patch_all_checks()
+        results = _run_with_patches(patches)
+        c = _find_check(results, "drivers")
+        assert c.status == "warning"
+        assert "not found" in c.message

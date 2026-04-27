@@ -31,7 +31,7 @@ class TrayApp:
         import pystray
         from PIL import Image
 
-        icon_path = Path(os.environ.get("APPDATA", "")) / "AmiFUSE" / "icons" / "diskimage.ico"
+        icon_path = Path(os.environ.get("APPDATA", "")) / "AmiFUSE" / "icons" / "tray.ico"
         if not icon_path.exists():
             logger.error("Icon not found: %s", icon_path)
             sys.exit(1)

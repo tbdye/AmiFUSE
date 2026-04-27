@@ -325,3 +325,62 @@ class TestInstallIcons:
         # Verify they're valid ICO files (start with ICO header)
         data = (icon_dir / "diskimage.ico").read_bytes()
         assert data[:4] == b"\x00\x00\x01\x00"
+
+    def test_install_icons_includes_tray(self, fake_registry, tmp_path, monkeypatch):
+        """_install_icons creates tray.ico."""
+        icon_dir = tmp_path / "icons"
+        monkeypatch.setattr("amifuse.windows_shell.ICON_DIR", icon_dir)
+
+        from amifuse.windows_shell import _install_icons
+        _install_icons()
+
+        assert (icon_dir / "tray.ico").exists()
+        data = (icon_dir / "tray.ico").read_bytes()
+        assert data[:4] == b"\x00\x00\x01\x00"
+
+
+class TestRemoveIcons:
+    def test_remove_icons_handles_lock(self, fake_registry, tmp_path, monkeypatch):
+        """_remove_icons handles PermissionError gracefully."""
+        icon_dir = tmp_path / "icons"
+        icon_dir.mkdir()
+        # Create icon files
+        for name in ("diskimage.ico", "floppyimage.ico", "tray.ico"):
+            (icon_dir / name).write_bytes(b"\x00\x00\x01\x00")
+
+        monkeypatch.setattr("amifuse.windows_shell.ICON_DIR", icon_dir)
+        monkeypatch.setattr("amifuse.windows_shell._LAUNCH_VBS", tmp_path / "launch.vbs")
+
+        # Make one file raise PermissionError on unlink
+        original_unlink = Path.unlink
+
+        def guarded_unlink(self, *args, **kwargs):
+            if self.name == "diskimage.ico":
+                raise PermissionError("locked by Explorer")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+        from amifuse.windows_shell import _remove_icons
+        # Should not raise
+        _remove_icons()
+
+        # diskimage.ico should still exist (locked), others removed
+        assert (icon_dir / "diskimage.ico").exists()
+        assert not (icon_dir / "floppyimage.ico").exists()
+
+
+class TestRegisterCreatesLaunchVbs:
+    def test_install_creates_launch_vbs(self, fake_registry, tmp_path, monkeypatch):
+        """register() creates launch.vbs."""
+        icon_dir = tmp_path / "icons"
+        launch_vbs = tmp_path / "launch.vbs"
+        monkeypatch.setattr("amifuse.windows_shell.ICON_DIR", icon_dir)
+        monkeypatch.setattr("amifuse.windows_shell._LAUNCH_VBS", launch_vbs)
+
+        from amifuse.windows_shell import register
+        register()
+
+        assert launch_vbs.exists()
+        content = launch_vbs.read_text(encoding="utf-8")
+        assert "WScript" in content or "CreateObject" in content
