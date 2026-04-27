@@ -8,3 +8,4 @@ BFFSFilesystem
 FastFileSystem
 SmartFileSystem
 pfs3aio
+*.egg-info/

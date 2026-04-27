@@ -13,6 +13,7 @@ Platform-specific implementations:
 import errno
 import logging
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,15 @@ from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .icon_darwin import DarwinIconHandler
+
+# Prevent subprocess calls from flashing a console window when invoked from
+# pythonw.exe (e.g. tray/launcher).
+_CREATE_NO_WINDOW = 0x08000000
+
+# signal.SIGKILL is not defined on Windows; fall back to SIGTERM so that
+# _kill_mount_owner_processes() can still compile and will use the strongest
+# signal available.
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def get_default_mountpoint(volname: str) -> Optional[Path]:
@@ -421,7 +431,7 @@ def find_amifuse_mounts():
         mounts = _find_amifuse_mounts_unix()
 
     _enrich_null_mountpoints(mounts)
-    return mounts
+    return _deduplicate_fusepy_children(mounts)
 
 
 def _parse_mount_tokens(tokens):
@@ -474,9 +484,9 @@ def _find_amifuse_mounts_unix():
 
     # macOS: lstart gives absolute start time; Linux: etimes gives elapsed seconds
     if is_mac:
-        ps_cmd = ["ps", "-axo", "pid=,lstart=,command="]
+        ps_cmd = ["ps", "-axo", "pid=,ppid=,lstart=,command="]
     else:
-        ps_cmd = ["ps", "-axo", "pid=,etimes=,command="]
+        ps_cmd = ["ps", "-axo", "pid=,ppid=,etimes=,command="]
 
     try:
         result = subprocess.run(
@@ -501,25 +511,27 @@ def _find_amifuse_mounts_unix():
 
         try:
             if is_mac:
-                # Format: "  PID  DAY MON DD HH:MM:SS YYYY COMMAND..."
+                # Format: "  PID  PPID  DAY MON DD HH:MM:SS YYYY COMMAND..."
                 # lstart is 5 tokens: e.g. "Sat Apr 19 10:30:00 2026"
-                parts = line.split(None, 6)
-                if len(parts) < 7:
+                parts = line.split(None, 8)
+                if len(parts) < 9:
                     continue
                 pid = int(parts[0])
-                lstart_str = " ".join(parts[1:6])
-                command = parts[6]
+                ppid = int(parts[1])
+                lstart_str = " ".join(parts[2:7])
+                command = parts[8]
                 # Parse lstart to compute uptime
                 uptime = _parse_lstart_uptime(lstart_str)
             else:
-                # Format: "  PID ETIMES COMMAND..."
-                parts = line.split(None, 2)
-                if len(parts) < 3:
+                # Format: "  PID  PPID ETIMES COMMAND..."
+                parts = line.split(None, 3)
+                if len(parts) < 4:
                     continue
                 pid = int(parts[0])
-                command = parts[2]
+                ppid = int(parts[1])
+                command = parts[3]
                 try:
-                    uptime = int(parts[1])
+                    uptime = int(parts[2])
                 except ValueError:
                     uptime = None
         except ValueError:
@@ -547,6 +559,7 @@ def _find_amifuse_mounts_unix():
             "pid": pid,
             "uptime_seconds": uptime,
             "filesystem_type": None,
+            "parent_pid": ppid,
         })
 
     return mounts
@@ -576,16 +589,17 @@ def _find_amifuse_mounts_windows():
         result = subprocess.run(
             ["wmic", "process", "where",
              "name like '%python%'",
-             "get", "ProcessId,CommandLine,CreationDate",
+             "get", "ProcessId,CommandLine,CreationDate,ParentProcessId",
              "/FORMAT:LIST"],
             check=False,
             capture_output=True,
             text=True,
+            creationflags=_CREATE_NO_WINDOW,
         )
     except OSError:
         # wmic not available (e.g., removed on newer Windows 11 builds)
         logger.debug("wmic not available, cannot discover mounts")
-        return []
+        return _find_amifuse_mounts_cim()
     if result.returncode != 0:
         logger.debug("wmic exited with code %d", result.returncode)
         return []
@@ -597,6 +611,7 @@ def _find_amifuse_mounts_windows():
     current_cmdline = None
     current_pid_val = None
     current_creation = None
+    current_parent_pid = None
 
     def _process_record():
         if current_cmdline is None or current_pid_val is None:
@@ -624,6 +639,7 @@ def _find_amifuse_mounts_windows():
             "pid": current_pid_val,
             "uptime_seconds": uptime,
             "filesystem_type": None,
+            "parent_pid": current_parent_pid,
         })
 
     for line in result.stdout.splitlines():
@@ -637,6 +653,7 @@ def _find_amifuse_mounts_windows():
                 current_cmdline = None
                 current_pid_val = None
                 current_creation = None
+                current_parent_pid = None
             continue
         if line.startswith("CommandLine="):
             current_cmdline = line[len("CommandLine="):]
@@ -647,6 +664,11 @@ def _find_amifuse_mounts_windows():
                 current_pid_val = None
         elif line.startswith("CreationDate="):
             current_creation = line[len("CreationDate="):]
+        elif line.startswith("ParentProcessId="):
+            try:
+                current_parent_pid = int(line[len("ParentProcessId="):])
+            except ValueError:
+                current_parent_pid = None
 
     # Handle last record if no trailing blank line
     _process_record()
@@ -779,4 +801,392 @@ def _parse_wmic_creation_date_uptime(creation_str):
                 pass
         return max(0, int(time.time() - start_epoch))
     except (ValueError, OverflowError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CIM/PowerShell fallback for mount discovery (wmic deprecated on Win11)
+# ---------------------------------------------------------------------------
+
+
+def _find_amifuse_mounts_cim():
+    """Discover amifuse mounts on Windows using PowerShell Get-CimInstance.
+
+    Fallback for when wmic is unavailable (removed on newer Windows 11 builds).
+    """
+    ps_cmd = [
+        "powershell", "-NoProfile", "-Command",
+        'Get-CimInstance Win32_Process -Filter "Name like \'%python%\'" '
+        "| Select-Object ProcessId,CommandLine,CreationDate,ParentProcessId "
+        "| ConvertTo-Json",
+    ]
+    try:
+        result = subprocess.run(
+            ps_cmd,
+            check=False,
+            capture_output=True,
+            creationflags=_CREATE_NO_WINDOW if sys.platform.startswith("win") else 0,
+        )
+    except OSError:
+        logger.debug("PowerShell not available for CIM fallback")
+        return []
+    if result.returncode != 0:
+        logger.debug("PowerShell CIM query exited with code %d", result.returncode)
+        return []
+
+    # PowerShell may emit a BOM; handle utf-8-sig
+    try:
+        text = result.stdout.decode("utf-8-sig")
+    except (UnicodeDecodeError, AttributeError):
+        text = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
+
+    import json
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("Failed to parse CIM JSON output")
+        return []
+
+    # Single result comes as a dict, multiple as a list
+    if isinstance(data, dict):
+        data = [data]
+
+    current_pid = os.getpid()
+    mounts = []
+
+    for entry in data:
+        cmdline = entry.get("CommandLine") or ""
+        if "amifuse" not in cmdline:
+            continue
+
+        try:
+            pid = int(entry.get("ProcessId", 0))
+        except (ValueError, TypeError):
+            continue
+        if pid == current_pid or pid == 0:
+            continue
+
+        try:
+            tokens = shlex.split(cmdline, posix=False)
+        except ValueError:
+            tokens = cmdline.split()
+
+        if "mount" not in tokens:
+            continue
+
+        image, mountpoint = _parse_mount_tokens(tokens)
+
+        # Parse CreationDate -- CIM returns ISO 8601 or .NET datetime string
+        uptime = None
+        creation = entry.get("CreationDate")
+        if creation and isinstance(creation, str):
+            # CIM JSON may include /Date(milliseconds)/ format
+            import re
+            m = re.search(r"/Date\((\d+)\)/", creation)
+            if m:
+                start_epoch = int(m.group(1)) / 1000.0
+                uptime = max(0, int(time.time() - start_epoch))
+
+        parent_pid = None
+        try:
+            parent_pid = int(entry.get("ParentProcessId", 0)) or None
+        except (ValueError, TypeError):
+            pass
+
+        mounts.append({
+            "mountpoint": mountpoint,
+            "image": image,
+            "pid": pid,
+            "uptime_seconds": uptime,
+            "filesystem_type": None,
+            "parent_pid": parent_pid,
+        })
+
+    return mounts
+
+
+# ---------------------------------------------------------------------------
+# fusepy child deduplication
+# ---------------------------------------------------------------------------
+
+
+def _deduplicate_fusepy_children(mounts: list) -> list:
+    """Filter out fusepy child processes from mount list.
+
+    fusepy spawns a child process for FUSE operations. Both parent and child
+    appear in process scanning, causing duplicate tray entries (e.g., "D:" and
+    "?"). Filter out mounts whose parent_pid matches another mount's pid.
+    """
+    pids = {m["pid"] for m in mounts}
+    return [m for m in mounts if m.get("parent_pid") not in pids]
+
+
+# ---------------------------------------------------------------------------
+# Process killing
+# ---------------------------------------------------------------------------
+
+
+def _pid_exists(pid: int) -> bool:
+    """Check if a process with the given PID exists."""
+    if sys.platform.startswith("win"):
+        # os.kill(pid, 0) is unreliable on Windows -- it raises OSError with
+        # errno EINVAL (WinError 87) for processes we didn't spawn, making
+        # live processes look dead.  Use OpenProcess instead.
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid,
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _find_mount_owner_pids(mountpoint: Path) -> List[int]:
+    """Find PIDs of amifuse processes that own the given mountpoint.
+
+    Uses find_amifuse_mounts() for process discovery, then filters to those
+    matching the given mountpoint.
+    """
+    raw_mountpoint = str(mountpoint)
+    abs_mountpoint = str(mountpoint.resolve(strict=False))
+
+    try:
+        all_mounts = find_amifuse_mounts()
+    except OSError:
+        return []
+
+    pids = []
+    for mount in all_mounts:
+        mp = mount.get("mountpoint")
+        if mp is None:
+            continue
+        if mp == raw_mountpoint or mp == abs_mountpoint:
+            pids.append(mount["pid"])
+            continue
+        try:
+            resolved = str(Path(mp).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+        if resolved == abs_mountpoint:
+            pids.append(mount["pid"])
+
+    return pids
+
+
+def kill_pids(pids: List[int], timeout: float = 10.0) -> List[int]:
+    """Kill a list of PIDs with graceful-then-force strategy.
+
+    On Windows: sends CTRL_BREAK_EVENT (graceful), then taskkill /F (force).
+    On Unix: sends SIGTERM (graceful), then SIGKILL (force).
+
+    Args:
+        pids: Process IDs to kill.
+        timeout: Seconds to wait for each graceful shutdown before force-kill.
+
+    Returns:
+        List of PIDs that were successfully killed.
+    """
+    if not pids:
+        return []
+
+    killed = []
+    is_win = sys.platform.startswith("win")
+
+    # Phase 1: graceful signal
+    remaining = []
+    for pid in pids:
+        try:
+            if is_win:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            remaining.append(pid)
+        except ProcessLookupError:
+            # Already dead -- count as killed
+            killed.append(pid)
+        except OSError:
+            if is_win:
+                # CTRL_BREAK_EVENT fails with OSError (WinError 87) for
+                # detached processes we didn't spawn.  The process is still
+                # alive -- add to remaining so Phase 3 (taskkill /F) runs.
+                remaining.append(pid)
+            else:
+                # On Unix, OSError from os.kill usually means the process
+                # is gone or inaccessible.
+                killed.append(pid)
+
+    # Phase 2: wait for graceful shutdown
+    deadline = time.time() + timeout
+    while remaining and time.time() < deadline:
+        still_alive = []
+        for pid in remaining:
+            if _pid_exists(pid):
+                still_alive.append(pid)
+            else:
+                killed.append(pid)
+        if not still_alive:
+            return killed
+        remaining = still_alive
+        time.sleep(0.1)
+
+    # Phase 3: force kill
+    for pid in remaining:
+        try:
+            if is_win:
+                # os.kill(pid, SIGKILL) maps to SIGTERM on Windows -- useless retry.
+                # Use taskkill /F for reliable force-kill.
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    check=False,
+                    capture_output=True,
+                    creationflags=_CREATE_NO_WINDOW,
+                )
+            else:
+                os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except (ProcessLookupError, OSError):
+            killed.append(pid)
+
+    return killed
+
+
+def _kill_mount_owner_processes(mountpoint: Path) -> List[int]:
+    """Kill all amifuse processes that own the given mountpoint.
+
+    Returns list of PIDs that were targeted (whether or not each one died).
+    """
+    pids = _find_mount_owner_pids(mountpoint)
+    if not pids:
+        return []
+    kill_pids(pids, timeout=1.0)
+    return pids
+
+
+# ---------------------------------------------------------------------------
+# FUSE backend detection
+# ---------------------------------------------------------------------------
+
+
+def detect_fuse_backend() -> dict:
+    """Detect the installed FUSE backend and return info about it.
+
+    This is a doctor-specific query function. Does NOT raise.
+
+    Returns:
+        {"installed": bool, "name": str, "version": Optional[str]}
+    """
+    if sys.platform.startswith("win"):
+        install_dir = _get_winfsp_install_dir()
+        if install_dir is None:
+            return {"installed": False, "name": "WinFSP", "version": None}
+        version = None
+        # Optionally try to read version from the DLL
+        dll_path = os.path.join(install_dir, "bin", "winfsp-x64.dll")
+        if not os.path.isfile(dll_path):
+            dll_path = os.path.join(install_dir, "bin", "winfsp-x86.dll")
+        if os.path.isfile(dll_path):
+            try:
+                version = _get_file_version_win(dll_path)
+            except Exception:
+                pass
+        return {"installed": True, "name": "WinFSP", "version": version}
+
+    if sys.platform.startswith("darwin"):
+        # Check macFUSE
+        if os.path.isdir("/Library/Filesystems/macfuse.fs/"):
+            version = _read_macfuse_version()
+            return {"installed": True, "name": "macFUSE", "version": version}
+        # Check fuse-t
+        for libpath in ("/usr/local/lib/libfuse-t.dylib", "/opt/homebrew/lib/libfuse-t.dylib"):
+            if os.path.isfile(libpath):
+                return {"installed": True, "name": "fuse-t", "version": None}
+        # Check generic mount_fusefs
+        if shutil.which("mount_fusefs"):
+            return {"installed": True, "name": "FUSE (generic)", "version": None}
+        return {"installed": False, "name": "macFUSE", "version": None}
+
+    # Linux
+    fm = shutil.which("fusermount3") or shutil.which("fusermount")
+    if fm:
+        name = "FUSE3" if "fusermount3" in fm else "FUSE"
+        return {"installed": True, "name": name, "version": None}
+    # Check for libfuse
+    for lib_dir in ("/usr/lib", "/usr/lib64", "/usr/local/lib"):
+        for lib_name in ("libfuse3.so", "libfuse.so"):
+            if os.path.isfile(os.path.join(lib_dir, lib_name)):
+                name = "FUSE3" if "fuse3" in lib_name else "FUSE"
+                return {"installed": True, "name": name, "version": None}
+    return {"installed": False, "name": "FUSE", "version": None}
+
+
+def _read_macfuse_version() -> Optional[str]:
+    """Try to read macFUSE version from its plist."""
+    plist_path = "/Library/Filesystems/macfuse.fs/Contents/Info.plist"
+    try:
+        import plistlib
+        with open(plist_path, "rb") as f:
+            plist = plistlib.load(f)
+        return plist.get("CFBundleVersion")
+    except Exception:
+        return None
+
+
+def _get_file_version_win(filepath: str) -> Optional[str]:
+    """Read file version from a Windows DLL/EXE using GetFileVersionInfoW."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        version_dll = ctypes.windll.version
+        size = version_dll.GetFileVersionInfoSizeW(filepath, None)
+        if not size:
+            return None
+
+        data = ctypes.create_string_buffer(size)
+        if not version_dll.GetFileVersionInfoW(filepath, 0, size, data):
+            return None
+
+        buf = ctypes.c_void_p()
+        buf_len = wintypes.UINT()
+        if not version_dll.VerQueryValueW(
+            data, "\\", ctypes.byref(buf), ctypes.byref(buf_len)
+        ):
+            return None
+
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", wintypes.DWORD),
+                ("dwStrucVersion", wintypes.DWORD),
+                ("dwFileVersionMS", wintypes.DWORD),
+                ("dwFileVersionLS", wintypes.DWORD),
+                ("dwProductVersionMS", wintypes.DWORD),
+                ("dwProductVersionLS", wintypes.DWORD),
+                ("dwFileFlagsMask", wintypes.DWORD),
+                ("dwFileFlags", wintypes.DWORD),
+                ("dwFileOS", wintypes.DWORD),
+                ("dwFileType", wintypes.DWORD),
+                ("dwFileSubtype", wintypes.DWORD),
+                ("dwFileDateMS", wintypes.DWORD),
+                ("dwFileDateLS", wintypes.DWORD),
+            ]
+
+        info = ctypes.cast(buf, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+        ms = info.dwFileVersionMS
+        ls = info.dwFileVersionLS
+        return f"{(ms >> 16) & 0xFFFF}.{ms & 0xFFFF}.{(ls >> 16) & 0xFFFF}.{ls & 0xFFFF}"
+    except Exception:
         return None
